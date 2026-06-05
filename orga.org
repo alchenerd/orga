@@ -1,0 +1,312 @@
+-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "init_ai") (org-babel-execute-src-block) (define-key org-mode-map (kbd "C-c C-v") 'ai-chat-cycle)); -*-
+
+#+TITLE: OrgA, the Org-mode Agent
+#+STARTUP: showall
+
+* LLM Configurations :noexport:
+#+NAME: openrouter_key
+#+BEGIN_SRC text
+""
+#+END_SRC
+
+#+NAME: openrouter_model
+#+BEGIN_SRC text
+"google/gemini-3.1-flash-lite"
+#+END_SRC
+
+* Initialize AI Sender Method :noexport:
+#+NAME: init_ai
+#+BEGIN_SRC emacs-lisp :noweb yes
+(require 'json)
+(require 'url)
+
+;;; -- Key resolution ----------------------------------------------------------
+
+(defun orga/read-env-file (var-name)
+  "Return VAR-NAME's value from a .env file in `default-directory', or nil."
+  (let ((env-file (expand-file-name ".env" default-directory)))
+    (when (file-exists-p env-file)
+      (with-temp-buffer
+        (insert-file-contents env-file)
+        (goto-char (point-min))
+        (when (re-search-forward
+               (concat "^" (regexp-quote var-name) "=\\(.*\\)$") nil t)
+          (string-trim (match-string 1)))))))
+
+(defun orga/active-key ()
+  "Return the OpenRouter API key, trying three sources in order:
+1. The openrouter_key Org block (if non-empty).
+2. OPENROUTER_API_KEY in a .env file next to this file.
+3. OPENROUTER_API_KEY in the process environment."
+  (let ((block-key <<openrouter_key>>))
+    (cond
+     ((and (stringp block-key) (not (string-empty-p block-key))) block-key)
+     ((orga/read-env-file "OPENROUTER_API_KEY"))
+     ((getenv "OPENROUTER_API_KEY"))
+     (t (error "OrgA: no API key found (Org block, .env, or environment)")))))
+
+;;; -- History parsing ---------------------------------------------------------
+
+(defun orga/subtree-body ()
+  "Return the message body of the subtree whose heading is at point.
+Skips the :PROPERTIES: drawer.  Result is trimmed."
+  (save-excursion
+    (forward-line 1)
+    ;; Skip :PROPERTIES:...:END:
+    (when (looking-at "[ \t]*:PROPERTIES:")
+      (re-search-forward "^[ \t]*:END:" nil t)
+      (forward-line 1))
+    ;; Plain body -- everything until end of subtree
+    (let ((beg (point))
+          (end (progn (org-end-of-subtree t) (point))))
+      (string-trim (buffer-substring-no-properties beg end)))))
+
+(defun orga/collect-history ()
+  "Return the full chat history as a vector of OpenAI-style message alists.
+Scans ** User, ** Input, ** Assistant, and ** Tool headings inside * Chat History.
+All Org metadata (property drawers, :REPLY: wrappers) is stripped so only
+plain content reaches the API."
+  (let (messages)
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^\\* Chat History" nil t)
+        (error "OrgA: no '* Chat History' section found"))
+      (let ((section-end (save-excursion (org-end-of-subtree t) (point))))
+        (while (re-search-forward
+                "^\\*\\* \\(User\\|Input\\|Assistant\\|Tool\\)" section-end t)
+          (let* ((kind    (match-string 1))
+                 (role    (pcase kind
+                            ("Assistant" "assistant")
+                            ("Tool"      "developer")
+                            ("User"      "user")
+                            ("Input"     "user")
+                            (_           (error "OrgA: unknown heading kind: %s" kind))))
+                 (content (encode-coding-string (orga/subtree-body) 'utf-8)))
+            (unless (string-empty-p content)
+              (push `(("role" . ,role) ("content" . ,content)) messages))))))
+    (vconcat (nreverse messages))))
+
+;;; -- System prompt -----------------------------------------------------------
+
+(defun orga/collect-system-prompt ()
+  "Return the body of the * System Prompt heading as a system message vector.
+Returns nil if the heading is absent or its body is empty."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward "^\\* System Prompt" nil t)
+      (let* ((beg (progn (forward-line 1) (point)))
+             (end (progn (org-end-of-subtree t) (point)))
+             (text (string-trim (buffer-substring-no-properties beg end))))
+        (unless (string-empty-p text)
+          (vector `(("role" . "developer")
+                    ("content" . ,(encode-coding-string text 'utf-8)))))))))
+
+
+;;
+;; The context window is a plist of named slots assembled in a fixed,
+;; explicitly declared order.  Each slot holds a vector of message alists.
+;;
+;; Slot order (top → bottom of the context sent to the API):
+;;
+;;   :system    – persistent system prompt (not yet populated)
+;;   :history   – full chat history from * Chat History
+;;
+;; To add a new injection, define its slot keyword here and add it to
+;; `orga/context-slot-order'.  The assembly loop in `orga/create-context'
+;; needs no other changes.
+
+(defvar orga/context-slot-order '(:system :history)
+  "Ordered list of context slot keywords.
+Slots are concatenated left-to-right to form the final message vector
+sent to the API.  Slots whose value is nil or an empty vector are skipped.")
+
+(defun orga/create-context ()
+  "Build and return the full context window as a vector of message alists.
+
+Fills a plist of named slots, then concatenates them in the order
+declared by `orga/context-slot-order'.
+
+Current slots:
+  :system   – persistent system prompt (empty for now)
+  :history  – chat history collected from * Chat History"
+  (let (slots) ; plist: (:slot-name vector-of-messages ...)
+
+    ;; ---- populate slots -------------------------------------------------
+
+    ;; :system -- persistent instructions sent before everything else.
+    (when-let ((sys (orga/collect-system-prompt)))
+      (setq slots (plist-put slots :system sys)))
+
+    ;; :history -- the conversation so far, always present.
+    (setq slots (plist-put slots :history (orga/collect-history)))
+
+    ;; ---- assemble in declared order -------------------------------------
+    (apply #'vconcat
+           (delq nil
+                 (mapcar (lambda (key)
+                           (let ((val (plist-get slots key)))
+                             (and val (not (zerop (length val))) val)))
+                         orga/context-slot-order)))))
+
+;;; -- API call ----------------------------------------------------------------
+
+(defun orga/call-api (model messages)
+  "POST MESSAGES to the OpenRouter chat completions endpoint for MODEL.
+Returns a plist (:content REPLY-STRING :finish-reason REASON-STRING),
+or signals an error on failure.
+
+FINISH-REASON values mirror the OpenAI chat completions spec:
+  \"stop\"          – model reached a natural stopping point
+  \"length\"         – output truncated by max_tokens
+  \"tool_calls\"     – model invoked one or more tools (agent loop trigger)
+  \"content_filter\" – output blocked by content policy
+  nil              – field absent or unrecognised"
+  (let* ((payload (json-encode `(("model"     . ,model)
+                                 ("reasoning" . (("enabled" . t)))
+                                 ("messages"  . ,messages))))
+         (url-request-method "POST")
+         (url-request-extra-headers
+          `(("Content-Type"  . "application/json")
+            ("Authorization" . ,(concat "Bearer " (orga/active-key)))))
+         (url-request-data   (encode-coding-string payload 'utf-8))
+         (response-buffer    (url-retrieve-synchronously
+                              "https://openrouter.ai/api/v1/chat/completions" t)))
+    (unwind-protect
+        (with-current-buffer response-buffer
+          (goto-char (point-min))
+          (unless (re-search-forward "^HTTP[^ ]* 2[0-9][0-9]" nil t)
+            (error "OrgA: API error -- %s"
+                   (string-trim (buffer-substring
+                                 (point-min)
+                                 (min (+ (point-min) 300) (point-max))))))
+          (re-search-forward "^$")  ; end of HTTP headers
+          (decode-coding-region (point) (point-max) 'utf-8)
+          (set-buffer-multibyte t)
+          (let* ((json-object-type 'alist)
+                 (json-array-type  'vector)
+                 (data         (json-read))
+                 (choices      (cdr (assoc 'choices data))))
+            (if (and choices (> (length choices) 0))
+                (let* ((choice        (aref choices 0))
+                       (content       (or (when-let ((s (cdr (assoc 'content
+                                                                    (cdr (assoc 'message choice))))))
+                                            (decode-coding-string s 'utf-8))
+                                          (error "OrgA: missing content in response")))
+                       (finish-reason (cdr (assoc 'finish_reason choice))))
+                  (list :content       content
+                        :finish-reason (when (and finish-reason
+                                                  (not (eq finish-reason :null)))
+                                         finish-reason)))
+              (error "OrgA: empty choices in response"))))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
+;;; -- Chat cycle --------------------------------------------------------------
+
+(defun orga/read-input-heading ()
+  "Find the last ** Input heading and return (start end text), or nil.
+START is the position of the heading line; END is the end of the subtree.
+TEXT is the trimmed body (excluding any property drawer)."
+  (save-excursion
+    (goto-char (point-max))
+    (when (re-search-backward "^\\*\\* Input" nil t)
+      (let* ((start (point))
+             (text  (orga/subtree-body))
+             (end   (progn (org-end-of-subtree t) (point))))
+        (list start end text)))))
+
+(defun ai-chat-cycle ()
+  "Commit the ** Input heading as a ** User message, call the AI, and append
+a ** Assistant reply (body wrapped in :REPLY:...:END: for visual clarity).
+Then insert a fresh ** Input heading at the end, ready for the next message.
+Bound to C-c C-v by the file-local eval cookie at the top of this file."
+  (interactive)
+  (pcase (orga/read-input-heading)
+    ('nil
+     (message "OrgA: no ** Input heading found."))
+    (`(,start ,end ,user-text)
+     (when (string-empty-p user-text)
+       (user-error "OrgA: ** Input is empty -- write something first"))
+     (let ((model     <<openrouter_model>>)
+           (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+
+       ;; 1. Overwrite the ** Input subtree with a dated ** User entry
+       (delete-region start end)
+       (goto-char (point-max))
+       (unless (bolp) (insert "\n"))
+       (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
+                       timestamp user-text))
+
+       ;; 2. Build context window (history + injections) and call API
+       (message "OrgA: sending...")
+       (let* ((context       (orga/create-context))
+              (response      (orga/call-api model context))
+              (ai-reply      (decode-coding-string (plist-get response :content) 'utf-8))
+              (finish-reason (or (plist-get response :finish-reason) "unknown")))
+
+         ;; 3. Append assistant reply inside a :REPLY: drawer so it is visually
+         ;;    boxed off from the freeform ** Input area that follows
+         (goto-char (point-max))
+         (unless (bolp) (insert "\n"))
+         (insert (format (concat "** Assistant\n"
+                                 ":PROPERTIES:\n:MODEL: %s\n:DATE: %s\n:FINISH_REASON: %s\n:END:\n"
+                                 "%s\n")
+                         model timestamp finish-reason ai-reply))
+
+         ;; 4. Fresh ** Input heading -- user types here next
+         (goto-char (point-max))
+         (unless (bolp) (insert "\n"))
+         (insert "** Input\n")
+
+         (org-reveal)
+         (goto-char (point-max))
+         (message "OrgA: reply received."))))))
+
+(message "OrgA loaded -- C-c C-v to send.")
+#+END_SRC
+
+#+RESULTS: init_ai
+: OrgA loaded -- C-c C-v to send.
+
+* System Prompt
+CYOA：西洋劍與魔法的奇幻世界大冒險！
+
+* Chat History
+
+** User
+:PROPERTIES:
+:DATE: 2026-06-05 22:16
+:END:
+「哎呀，好久沒來酒館了，」我推開了大門，「今天有什麼任務委託可以接呢？」
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.1-flash-lite
+:DATE: 2026-06-05 22:16
+:FINISH_REASON: stop
+:END:
+酒館內原本嘈雜的交談聲在你推門進入的瞬間短暫地停滯了一下，隨後又迅速恢復了熱絡。壁爐裡燃燒的木柴發出劈啪聲，空氣中瀰漫著烤肉與廉價麥芽酒混合的香氣。
+
+冒險者公會的看板就在櫃台正後方，那位總是懶洋洋、嘴裡叼著根乾草的公會招待員——老麥克，抬起頭，眯著眼睛打量了你一番，隨即咧嘴露出一抹意味深長的笑。
+
+「喲，這不是好久不見的……『那位大人』嗎？」老麥克轉身從櫃台後抽出一張捲軸，用指尖緩緩攤開，露出上面刻印著的三個不同徽章。
+
+他將捲軸推到你面前，用帶著老繭的手指敲了敲桌面：
+
+「最近公會確實接到了幾件棘手的委託，看你的心情，想接哪種等級的？”
+
+### 1. 【討伐任務：迷霧沼澤的哭聲】（危險等級：B）
+*   **委託內容：** 鄰近村莊的農民抱怨，每當深夜，沼澤深處就會傳來嬰兒般的哭聲，隨後失蹤的家畜越來越多。據說是一名墮落的死靈法師在進行儀式。
+*   **報酬：** 300金幣，以及一份罕見的「抗毒藥劑配方」。
+
+### 2. 【護送任務：給北方領主的密信】（危險等級：C）
+*   **委託內容：** 一位神色慌張的商人希望你能護送他穿過險峻的黑鬃山脈。他身上帶著一封給北方領主的密信，據說這封信足以改變王國南部的貿易格局。
+*   **報酬：** 500金幣，還有機會獲得那名商人商隊的長期VIP折扣。
+
+### 3. 【調查任務：古代遺跡的迴響】（危險等級：A）
+*   **委託內容：** 最近廢棄已久的「沉睡神殿」突然噴射出異常的魔力波動，方圓十里的魔獸都開始焦躁不安。公會需要有人深入底層調查核心結構是否發生了變異。
+*   **報酬：** 1000金幣，還有機會從遺跡中撈出任何你找到的古代遺物（擁有鑑定權）。
+
+**「選吧，」老麥克端起一杯深褐色的啤酒啜了一口，「不過先提醒你，這最後一個委託，已經有三隊賞金獵人進去以後就沒再出來過了。」**
+
+你需要做出決定：接下哪一個任務？或者，你打算先在酒館裡收集一下情報再出發？
+** Input
