@@ -11,7 +11,7 @@
 
 #+NAME: openrouter_model
 #+BEGIN_SRC text
-"google/gemini-3.1-flash-lite"
+"google/gemini-3.5-flash"
 #+END_SRC
 
 * Initialize AI Sender Method :noexport:
@@ -49,17 +49,23 @@
 
 (defun orga/subtree-body ()
   "Return the message body of the subtree whose heading is at point.
-Skips the :PROPERTIES: drawer.  Result is trimmed."
+Skips the :PROPERTIES: drawer and strips any :REASONING:...:END: drawers
+so internal chain-of-thought never leaks back into the API context.
+Result is trimmed."
   (save-excursion
     (forward-line 1)
     ;; Skip :PROPERTIES:...:END:
     (when (looking-at "[ \t]*:PROPERTIES:")
       (re-search-forward "^[ \t]*:END:" nil t)
       (forward-line 1))
-    ;; Plain body -- everything until end of subtree
-    (let ((beg (point))
-          (end (progn (org-end-of-subtree t) (point))))
-      (string-trim (buffer-substring-no-properties beg end)))))
+    ;; Collect the raw subtree body
+    (let* ((beg (point))
+           (end (progn (org-end-of-subtree t) (point)))
+           (raw (buffer-substring-no-properties beg end)))
+      ;; Strip :REASONING:...:END: blocks (non-greedy, multiline)
+      (string-trim
+       (replace-regexp-in-string
+        ":REASONING:[\0-\377[:nonascii:]]*?:END:\n?" "" raw)))))
 
 (defun orga/collect-history ()
   "Return the full chat history as a vector of OpenAI-style message alists.
@@ -152,15 +158,17 @@ Current slots:
 
 (defun orga/call-api (model messages)
   "POST MESSAGES to the OpenRouter chat completions endpoint for MODEL.
-Returns a plist (:content REPLY-STRING :finish-reason REASON-STRING),
-or signals an error on failure.
+Returns a plist with the following keys:
+  :content        – assistant reply string
+  :finish-reason  – \"stop\", \"length\", \"tool_calls\", etc., or nil
+  :reasoning      – chain-of-thought text from reasoning_details, or nil
+  :provider       – upstream provider string (e.g. \"Google\"), or nil
+  :tokens-in      – prompt token count, or nil
+  :tokens-out     – completion token count (includes reasoning), or nil
+  :tokens-reasoning – reasoning-only token count, or nil
+  :cost           – total cost in USD as a float, or nil
 
-FINISH-REASON values mirror the OpenAI chat completions spec:
-  \"stop\"          – model reached a natural stopping point
-  \"length\"         – output truncated by max_tokens
-  \"tool_calls\"     – model invoked one or more tools (agent loop trigger)
-  \"content_filter\" – output blocked by content policy
-  nil              – field absent or unrecognised"
+Signals an error on HTTP or parse failure."
   (let* ((payload (json-encode `(("model"     . ,model)
                                  ("reasoning" . (("enabled" . t)))
                                  ("messages"  . ,messages))))
@@ -188,15 +196,44 @@ FINISH-REASON values mirror the OpenAI chat completions spec:
                  (choices      (cdr (assoc 'choices data))))
             (if (and choices (> (length choices) 0))
                 (let* ((choice        (aref choices 0))
-                       (content       (or (when-let ((s (cdr (assoc 'content
-                                                                    (cdr (assoc 'message choice))))))
+                       (message-obj   (cdr (assoc 'message choice)))
+                       (content       (or (when-let ((s (cdr (assoc 'content message-obj))))
                                             (decode-coding-string s 'utf-8))
                                           (error "OrgA: missing content in response")))
-                       (finish-reason (cdr (assoc 'finish_reason choice))))
-                  (list :content       content
-                        :finish-reason (when (and finish-reason
-                                                  (not (eq finish-reason :null)))
-                                         finish-reason)))
+                       (finish-reason (cdr (assoc 'finish_reason choice)))
+                       ;; -- reasoning: pull the first reasoning.text entry ------
+                       (reasoning
+                        (let* ((details (cdr (assoc 'reasoning_details message-obj)))
+                               (text    (when (and details (> (length details) 0))
+                                          (cdr (assoc 'text (aref details 0))))))
+                          (when (and text (not (eq text :null))
+                                     (not (string-empty-p text)))
+                            (decode-coding-string text 'utf-8))))
+                       ;; -- provider --------------------------------------------
+                       (provider
+                        (let ((p (cdr (assoc 'provider data))))
+                          (when (and p (not (eq p :null))) p)))
+                       ;; -- usage -----------------------------------------------
+                       (usage              (cdr (assoc 'usage data)))
+                       (tokens-in          (cdr (assoc 'prompt_tokens usage)))
+                       (tokens-out         (cdr (assoc 'completion_tokens usage)))
+                       (tokens-reasoning   (cdr (assoc 'reasoning_tokens
+                                                        (cdr (assoc 'completion_tokens_details usage)))))
+                       (cost               (cdr (assoc 'cost usage))))
+                  (list :content          content
+                        :finish-reason    (when (and finish-reason
+                                                     (not (eq finish-reason :null)))
+                                            finish-reason)
+                        :reasoning        reasoning
+                        :provider         provider
+                        :tokens-in        (when (and tokens-in (not (eq tokens-in :null)))
+                                            tokens-in)
+                        :tokens-out       (when (and tokens-out (not (eq tokens-out :null)))
+                                            tokens-out)
+                        :tokens-reasoning (when (and tokens-reasoning (not (eq tokens-reasoning :null)))
+                                            tokens-reasoning)
+                        :cost             (when (and cost (not (eq cost :null)))
+                                            cost)))
               (error "OrgA: empty choices in response"))))
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
@@ -217,8 +254,16 @@ TEXT is the trimmed body (excluding any property drawer)."
 
 (defun ai-chat-cycle ()
   "Commit the ** Input heading as a ** User message, call the AI, and append
-a ** Assistant reply (body wrapped in :REPLY:...:END: for visual clarity).
-Then insert a fresh ** Input heading at the end, ready for the next message.
+a ** Assistant reply.  The reply block contains:
+  - :PROPERTIES: with :MODEL:, :PROVIDER:, :DATE:, :FINISH_REASON:,
+    :TOKENS_IN:, :TOKENS_OUT:, :TOKENS_REASONING:, :COST_USD:
+  - A :REASONING:...:END: drawer with the model's chain-of-thought (if any)
+  - The plain assistant reply text
+
+The :REASONING: drawer is stripped from context before the next API call
+so chain-of-thought never leaks back to the model.
+
+Then inserts a fresh ** Input heading at the end, ready for the next message.
 Bound to C-c C-v by the file-local eval cookie at the top of this file."
   (interactive)
   (pcase (orga/read-input-heading)
@@ -239,19 +284,55 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
 
        ;; 2. Build context window (history + injections) and call API
        (message "OrgA: sending...")
-       (let* ((context       (orga/create-context))
-              (response      (orga/call-api model context))
-              (ai-reply      (decode-coding-string (plist-get response :content) 'utf-8))
-              (finish-reason (or (plist-get response :finish-reason) "unknown")))
+       (let* ((context           (orga/create-context))
+              (response          (orga/call-api model context))
+              (ai-reply          (plist-get response :content))
+              (finish-reason     (or (plist-get response :finish-reason) "unknown"))
+              (reasoning         (plist-get response :reasoning))
+              (provider          (or (plist-get response :provider) ""))
+              (tokens-in         (plist-get response :tokens-in))
+              (tokens-out        (plist-get response :tokens-out))
+              (tokens-reasoning  (plist-get response :tokens-reasoning))
+              (cost              (plist-get response :cost)))
 
-         ;; 3. Append assistant reply inside a :REPLY: drawer so it is visually
-         ;;    boxed off from the freeform ** Input area that follows
+         ;; 3. Append assistant reply
          (goto-char (point-max))
          (unless (bolp) (insert "\n"))
+
+         ;; 3a. Heading + :PROPERTIES: drawer
          (insert (format (concat "** Assistant\n"
-                                 ":PROPERTIES:\n:MODEL: %s\n:DATE: %s\n:FINISH_REASON: %s\n:END:\n"
-                                 "%s\n")
-                         model timestamp finish-reason ai-reply))
+                                 ":PROPERTIES:\n"
+                                 ":MODEL: %s\n"
+                                 ":PROVIDER: %s\n"
+                                 ":DATE: %s\n"
+                                 ":FINISH_REASON: %s\n"
+                                 ":TOKENS_IN: %s\n"
+                                 ":TOKENS_OUT: %s\n"
+                                 ":TOKENS_REASONING: %s\n"
+                                 ":COST_USD: %s\n"
+                                 ":END:\n")
+                         model
+                         provider
+                         timestamp
+                         finish-reason
+                         (or tokens-in "")
+                         (or tokens-out "")
+                         (or tokens-reasoning "")
+                         (if cost (format "%.6f" cost) "")))
+
+         ;; 3b. :REASONING: drawer (omitted when model returns no reasoning)
+         (when (and reasoning (not (string-empty-p reasoning)))
+           (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
+
+         ;; 3c. Plain reply text
+         (insert (format "%s\n" ai-reply))
+
+         ;; 3d. Fold drawers in the new Assistant subtree
+         (save-excursion
+           (re-search-backward "^\\*\\* Assistant" nil t)
+           (if (fboundp 'org-fold-hide-drawer-all)
+               (org-fold-hide-drawer-all)
+             (org-hide-drawer-all)))
 
          ;; 4. Fresh ** Input heading -- user types here next
          (goto-char (point-max))
@@ -270,43 +351,186 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
 
 * System Prompt
 CYOA：西洋劍與魔法的奇幻世界大冒險！
+限制：僅使用純文字，嚴禁使用Markdown，角色交談時使用引號。
 
 * Chat History
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-05 22:16
+:DATE: 2026-06-06 22:09
 :END:
 「哎呀，好久沒來酒館了，」我推開了大門，「今天有什麼任務委託可以接呢？」
 ** Assistant
 :PROPERTIES:
-:MODEL: google/gemini-3.1-flash-lite
-:DATE: 2026-06-05 22:16
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-06 22:09
 :FINISH_REASON: stop
+:TOKENS_IN: 928
+:TOKENS_OUT: 2190
+:TOKENS_REASONING: 1493
+:COST_USD: 0.021102
 :END:
-酒館內原本嘈雜的交談聲在你推門進入的瞬間短暫地停滯了一下，隨後又迅速恢復了熱絡。壁爐裡燃燒的木柴發出劈啪聲，空氣中瀰漫著烤肉與廉價麥芽酒混合的香氣。
+:REASONING:
+**Exploring Western Fantasy Concepts**
 
-冒險者公會的看板就在櫃台正後方，那位總是懶洋洋、嘴裡叼著根乾草的公會招待員——老麥克，抬起頭，眯著眼睛打量了你一番，隨即咧嘴露出一抹意味深長的笑。
+I'm currently delving into the intersection of Western aesthetics and sword-and-sorcery fantasy. The challenge lies in blending the grit and lawlessness of the West with the magic and mythical creatures of fantasy. My focus is on how to naturally integrate these disparate elements to create a cohesive and compelling narrative.
 
-「喲，這不是好久不見的……『那位大人』嗎？」老麥克轉身從櫃台後抽出一張捲軸，用指尖緩緩攤開，露出上面刻印著的三個不同徽章。
+**Gathering Western Tavern Ambiance**
 
-他將捲軸推到你面前，用帶著老繭的手指敲了敲桌面：
+I'm focusing on establishing the rough, lived-in feel of a Western fantasy tavern. My current thoughts revolve around sensory details: the scent of stale ale and roasted meat, the clatter of dice, and the murmur of conversations. I'm also considering how to introduce an NPC who can offer a quest hook naturally within this setting.
 
-「最近公會確實接到了幾件棘手的委託，看你的心情，想接哪種等級的？”
+**Weaving Tavern Encounters**
 
-### 1. 【討伐任務：迷霧沼澤的哭聲】（危險等級：B）
-*   **委託內容：** 鄰近村莊的農民抱怨，每當深夜，沼澤深處就會傳來嬰兒般的哭聲，隨後失蹤的家畜越來越多。據說是一名墮落的死靈法師在進行儀式。
-*   **報酬：** 300金幣，以及一份罕見的「抗毒藥劑配方」。
+I'm working on bringing the "Gilded Gryphon" to life with specific details. The dialogue with the bartender, Rain, and the quest board options feel like a solid foundation for player interaction. I'm considering how to flesh out the atmosphere further with more character snippets.
 
-### 2. 【護送任務：給北方領主的密信】（危險等級：C）
-*   **委託內容：** 一位神色慌張的商人希望你能護送他穿過險峻的黑鬃山脈。他身上帶著一封給北方領主的密信，據說這封信足以改變王國南部的貿易格局。
-*   **報酬：** 500金幣，還有機會獲得那名商人商隊的長期VIP折扣。
+**Discovering Cellar Mysteries**
 
-### 3. 【調查任務：古代遺跡的迴響】（危險等級：A）
-*   **委託內容：** 最近廢棄已久的「沉睡神殿」突然噴射出異常的魔力波動，方圓十里的魔獸都開始焦躁不安。公會需要有人深入底層調查核心結構是否發生了變異。
-*   **報酬：** 1000金幣，還有機會從遺跡中撈出任何你找到的古代遺物（擁有鑑定權）。
+I'm now focusing on the sounds emanating from the tavern's cellar. This offers a classic starting point for a quest, but I'm aiming for a unique twist to make it engaging. My thoughts are on crafting an atmosphere that hints at something unusual below.
 
-**「選吧，」老麥克端起一杯深褐色的啤酒啜了一口，「不過先提醒你，這最後一個委託，已經有三隊賞金獵人進去以後就沒再出來過了。」**
+**Developing Quest Hooks**
 
-你需要做出決定：接下哪一個任務？或者，你打算先在酒館裡收集一下情報再出發？
+I'm now focusing on the specific quest offers presented by the barkeep. I'm considering the details of the merchant's missing daughter, the goblin threat in the "Mist Forest," and the alchemist's need for "Moonpetal Grass" in "Dawn Valley." My thoughts are on how to present these clearly and enticingly.
+
+**Investigating Cellar Disturbances**
+
+I'm currently exploring the sounds from the tavern cellar. My thoughts are focused on crafting an unsettling atmosphere, hinting at something beyond the ordinary beneath our feet. I'm considering how to make this a compelling starting point for a quest, with a unique twist.
+
+
+:END:
+厚重的橡木大門被你推開，伴隨著吱呀聲，酒館內部的熱氣與喧囂瞬間撲面而來。
+空氣中瀰漫著烤肉的焦香、麥芽啤酒的香氣，以及混雜著皮革與汗水的冒險者氣息。
+壁爐裡的柴火劈啪作響，照亮了角落裡正在低聲談判的盜賊，和幾名正喝得面紅耳赤的傭兵。
+
+站在吧台後方的是酒館老闆雷恩，一個身材魁梧、臉上有一道顯眼疤痕的退役冒險者。
+他正用一塊乾淨的抹布擦拭著木杯，抬頭看見你，粗獷的臉上頓時露出了爽朗的笑容。
+
+「喔！這不是好久不見的冒險者嗎？」雷恩大聲說著，順手將一杯剛倒好、冒著白色泡沫的冰涼麥芽酒推到你面前，「今天吹的是什麼風，竟然把你給吹來了？想要找工作的話，你來的正是時候，佈告欄上剛好送來了三個新鮮的委託。」
+
+雷恩轉過身，指了指他身後那面貼滿羊皮紙的木牆。
+
+「第一個委託，是鎮上的富商哈里斯老爺發出的。他的千金在兩天前前往鄰鎮的路上，在『迷霧森林』邊緣失蹤了。哈里斯老爺懸賞了五十枚金幣，要求找回他的女兒。不過那片森林最近傳出有哥布林異常聚集的消息，恐怕沒那麼簡單。」
+
+雷恩接著指向第二張有些泛黃的羊皮紙。
+
+「第二個委託，是當地的鍊金術師協會委託的。他們需要有人前往『晨曦山谷』的深處，採集一種只在滿月之夜綻放的『月光草』。委託報酬是三十枚金幣，外加兩瓶高階回復藥水。那裡倒是不常有強大的魔獸，但山路崎嶇，而且經常有強盜出沒。」
+
+最後，雷恩壓低了聲音，神祕地指了指腳底下。
+
+「第三個……嘿，其實是我私人的委託。最近這幾天，每到深夜，我這酒館的地窖裡就會傳出奇怪的挖掘聲和野獸的低吼。我派去查看的夥計都被嚇得屁滾尿流。如果你願意下去幫我查個清楚，徹底解決這個麻煩，我願意支付你二十枚金幣，外加以後你來我這喝酒一律八折。」
+
+雷恩摟著雙臂，看著你。
+
+「那麼，老朋友，你今天打算挑戰哪一個任務呢？」
+
+請選擇你的下一步：
+選項一：選擇「迷霧森林的救援行動」，尋找富商失蹤的女兒。
+選項二：選擇「晨曦山谷的藥草採集」，為鍊金術師尋找月光草。
+選項三：選擇「酒館地窖的深夜異音」，替老闆雷恩解決地底的隱憂。
+** User
+:PROPERTIES:
+:DATE: 2026-06-06 22:11
+:END:
+「哦？月光草？還記得第一次完成任務的時候，報酬就是月光草標本。他要那東西做什麼？」
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-06 22:11
+:FINISH_REASON: stop
+:TOKENS_IN: 11325
+:TOKENS_OUT: 1437
+:TOKENS_REASONING: 992
+:COST_USD: 0.029920
+:END:
+:REASONING:
+**Recalling First Mission**
+
+I'm reflecting on a past mission where I received Moonlight Grass as a reward. I'm curious about the recipient's intentions for acquiring it, especially considering my initial encounter with the herb.
+
+**Exploring Alchemist's Motives**
+
+I'm now focused on why the Alchemist Guild desires the Moonlight Grass. I'm considering their potential uses for it, especially given its unique properties and my past experience with the herb.
+
+**Investigating Potion Potentials**
+
+I'm piecing together the Alchemist Guild's interest in Moonlight Grass. My current thoughts suggest it's a key ingredient for advanced recovery, mana regeneration, or possibly illusion/divination potions. Leyton, a former adventurer, should have some insight into this alchemical gossip.
+
+**Gathering Herbal Intel**
+
+My focus has shifted to the practical applications of Moonlight Grass. I've realized it's crucial for restoring mages and knights suffering from spell overload or mental trauma, and also as a component in potent healing potions. The urgency of a full moon tonight means a prompt departure to Sunken Valley is necessary, though dangers lurk there. I need to decide if I'll accept the herb-gathering quest or consider other options.
+
+
+:END:
+雷恩停下手上的動作，露出一副懷念的神情，隨後哈哈大笑了兩聲，粗獷的笑聲在吧台周圍迴盪。
+
+「你這小子的記性倒是不錯。沒錯，那時候你才剛拿著一把缺口的鐵劍，一轉眼都成能獨當一面的冒險者了。」
+
+雷恩壓低了身體，湊近你低聲解釋道。
+
+「至於鍊金術師協會那些老傢伙要月光草做什麼？那玩意兒可稀罕了。月光草只在滿月時吸收純淨的月華綻放，裡面蘊含著極其溫和卻強大的魔力活性。聽說協會最近在研製一種新型的『精神舒緩劑』，專門用來穩定那些因為過度施法而魔力暴走，或者是受到精神創傷的奇蹟牧師。當然，高級的回復藥水要是少了它當調和劑，藥效也會大打折扣。」
+
+雷恩直起身體，指了指窗外漸漸西斜的太陽。
+
+「對了，今天晚上剛好就是滿月。如果你打算接這個委託，現在就得趕緊出發前往晨曦山谷了。否則錯過今晚，那些花朵就會重新閉合，得再等上整整一個月。不過，晚上的晨曦山谷可不太平，強盜和夜行魔獸最喜歡在這種時候伏擊落單的旅人。你決定好了嗎？要接下這個任務，還是再考慮看看其他兩個？」
+
+請選擇你的下一步：
+
+選項一：決定了，接下「晨曦山谷的藥草採集」任務，立刻整備裝備出發。
+
+選項二：時間太趕了，還是換一個，改接「迷霧森林的救援行動」去尋找富商千金。
+
+選項三：不想在夜間出遠門，決定留在酒館，接下「酒館地窖的深夜異音」任務。
+** User
+:PROPERTIES:
+:DATE: 2026-06-06 22:13
+:END:
+「雷恩老爹！這個任務我就接了！外加一杯行前麥酒！」
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-06 22:13
+:FINISH_REASON: stop
+:TOKENS_IN: 18042
+:TOKENS_OUT: 1398
+:TOKENS_REASONING: 749
+:COST_USD: 0.039645
+:END:
+:REASONING:
+**Accepting the Mission**
+
+I've decided to take on this particular task and have also ordered an ale to go with it.
+
+**Embarking on the Quest**
+
+I've accepted the "Dawn Valley Herb Gathering" quest for Moonlight Grass and am now preparing for the journey. Rayne, the barkeep, seems amused by my enthusiasm and is offering me a drink and potentially some useful advice as I get ready to depart.
+
+**Gathering Supplies and Intel**
+
+Rayne, the barkeep, has provided me with a pouch of energy-boosting dried rations and a map of Dawn Valley, warning of its shifting terrain and advising caution regarding bandits and shadow wolves. I've also learned that Moonlight Grass glows faintly under the moonlight and is found near damp cliff faces or streams.
+
+
+:END:
+雷恩聽了哈哈大笑，那隻寬大的手掌猛地一拍吧台，震得空木杯都跳了一下。
+
+「好小子！有幹勁！不愧是我看中的冒險者，這杯行前酒算我請你的！」
+
+雷恩熟練地拉下木桶的把手，將麥酒杯注得滿滿的，乳白色的泡沫順著杯身滑落。他將酒杯重重推到你面前，接著彎腰從櫃檯下翻找了一陣，拿出一份有些磨損的羊皮紙地圖，以及一個裝著乾糧與幾枚解毒藥丸的小布包，一起推給了你。
+
+「拿著吧。這是晨曦山谷的地圖，雖然那裡的岩壁常有小規模塌方、地形有些變動，但總比你瞎子摸黑強。記住，月光草只生長在潮濕的岩壁縫隙或靠近溪流的陰暗處，在滿月照耀下會發出淡淡的藍白色微光，非常好辨認。不過，千萬別因為找花而大意了，山谷裡的影狼在月光下速度極快，而且最近據說有一夥強盜盤踞在入口附近。」
+
+你端起沉甸甸的木杯，一口氣將冰涼清爽、帶著濃郁麥香的啤酒灌下肚。溫熱的感覺隨即在胃裡散開，疲憊一掃而空，體內的鬥志與魔力彷彿也隨之沸騰了起來。
+
+告別了雷恩和喧囂的酒館，你整理好腰間的佩劍與法術書，踏著夕陽的餘暉走出了小鎮。
+
+當你抵達晨曦山谷的入口時，夕陽已經完全沉入地平線下。夜幕低垂，一輪巨大而皎潔的銀色滿月緩緩升起，將整片荒野與前方險峻的山谷披上一層銀紗。遠處隱隱傳來幾聲淒厲的狼嗥。
+
+看著眼前的山谷，你發現有兩條路可以通往地圖上標示著月光草生長深谷：
+
+選項一：選擇「蜿蜒的谷底主道」。這條路平坦寬敞，前進速度最快，但兩側高聳的峭壁極易遭遇強盜設下的落石伏擊。
+
+選項二：選擇「陡峭的峭壁古道」。這是一條沿著山脊攀爬的廢棄小徑，道路狹窄崎嶇且沒有護欄，走起來極其消耗體力，但視野開闊，比較不容易被埋伏。
+
+選項三：選擇「沿著乾涸的暗河河道」。從山谷側面的隱秘洞穴進入地下河床，雖然完全沒有光線、地勢陰濕，但可以直接繞過大部分地面上的野獸與強盜。
 ** Input
