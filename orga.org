@@ -1,4 +1,4 @@
--*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "init_ai") (org-babel-execute-src-block) (define-key org-mode-map (kbd "C-c C-v") 'ai-chat-cycle)); -*-
+-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "init_ai") (org-babel-execute-src-block) (define-key org-mode-map (kbd "C-c C-v") 'ai-chat-cycle) (define-key org-mode-map (kbd "C-c C-d") 'orga/toggle-dry-run)); -*-
 
 #+TITLE: OrgA, the Org-mode Agent
 #+STARTUP: showall
@@ -83,7 +83,7 @@ plain content reaches the API."
           (let* ((kind    (match-string 1))
                  (role    (pcase kind
                             ("Assistant" "assistant")
-                            ("Tool"      "developer")
+                            ("Tool"      "tool")
                             ("User"      "user")
                             ("Input"     "user")
                             (_           (error "OrgA: unknown heading kind: %s" kind))))
@@ -106,7 +106,6 @@ Returns nil if the heading is absent or its body is empty."
         (unless (string-empty-p text)
           (vector `(("role" . "developer")
                     ("content" . ,(encode-coding-string text 'utf-8)))))))))
-
 
 ;;
 ;; The context window is a plist of named slots assembled in a fixed,
@@ -154,10 +153,25 @@ Current slots:
                              (and val (not (zerop (length val))) val)))
                          orga/context-slot-order)))))
 
+;;; -- Dry-run toggle ----------------------------------------------------------
+
+(defvar orga/dry-run nil
+  "When non-nil, `ai-chat-cycle' shows the API payload instead of sending it.
+Toggle with C-c C-d (bound by the file-local eval cookie).")
+
+(defun orga/toggle-dry-run ()
+  "Toggle dry-run mode and report the new state in the minibuffer."
+  (interactive)
+  (setq orga/dry-run (not orga/dry-run))
+  (message "OrgA: dry-run %s" (if orga/dry-run "ON (C-c C-v will preview, not send)" "OFF")))
+
 ;;; -- API call ----------------------------------------------------------------
 
-(defun orga/call-api (model messages)
+(defun orga/call-api (model messages &optional tools dry-run)
   "POST MESSAGES to the OpenRouter chat completions endpoint for MODEL.
+TOOLS is an optional list of tool-schema alists to include in the payload.
+When DRY-RUN is non-nil, pretty-print the payload to *OrgA Dry Run* instead
+of sending it and return nil.
 Returns a plist with the following keys:
   :content        – assistant reply string
   :finish-reason  – \"stop\", \"length\", \"tool_calls\", etc., or nil
@@ -169,9 +183,19 @@ Returns a plist with the following keys:
   :cost           – total cost in USD as a float, or nil
 
 Signals an error on HTTP or parse failure."
-  (let* ((payload (json-encode `(("model"     . ,model)
-                                 ("reasoning" . (("enabled" . t)))
-                                 ("messages"  . ,messages))))
+  (let* ((payload-alist `(("model"     . ,model)
+                          ("reasoning" . (("enabled" . t)))
+                          ("messages"  . ,messages)
+                          ,@(when tools `(("tools" . ,tools)))))
+         (payload (json-encode payload-alist))
+         (_ (when dry-run
+              (with-current-buffer (get-buffer-create "*OrgA Dry Run*")
+                (erase-buffer)
+                (insert payload)
+                (json-pretty-print-buffer)
+                (goto-char (point-min))
+                (display-buffer (current-buffer)))
+              (cl-return-from orga/call-api nil)))
          (url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type"  . "application/json")
@@ -186,7 +210,7 @@ Signals an error on HTTP or parse failure."
             (error "OrgA: API error -- %s"
                    (string-trim (buffer-substring
                                  (point-min)
-                                 (min (+ (point-min) 300) (point-max))))))
+                                 (min (+ (point-min) 9999) (point-max))))))
           (re-search-forward "^$")  ; end of HTTP headers
           (decode-coding-region (point) (point-max) 'utf-8)
           (set-buffer-multibyte t)
@@ -283,9 +307,11 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
                        timestamp user-text))
 
        ;; 2. Build context window (history + injections) and call API
-       (message "OrgA: sending...")
+       ;; Toggle dry-run with C-c C-d; C-c C-v always attempts to send.
+       (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
        (let* ((context           (orga/create-context))
-              (response          (orga/call-api model context))
+              (tools             '<<orga__tools()>>)
+              (response          (orga/call-api model context tools orga/dry-run))
               (ai-reply          (plist-get response :content))
               (finish-reason     (or (plist-get response :finish-reason) "unknown"))
               (reasoning         (plist-get response :reasoning))
@@ -295,7 +321,8 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
               (tokens-reasoning  (plist-get response :tokens-reasoning))
               (cost              (plist-get response :cost)))
 
-         ;; 3. Append assistant reply
+         ;; 3. Append assistant reply (skipped on dry-run; response is nil)
+         (when (null response) (cl-return-from ai-chat-cycle nil))
          (goto-char (point-max))
          (unless (bolp) (insert "\n"))
 
@@ -349,188 +376,127 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
 #+RESULTS: init_ai
 : OrgA loaded -- C-c C-v to send.
 
+* Tools
+** get_divination_result
+Gets a divination result. Secretly done by the human user. Human user manually handles the tool response.
+
+Below is the tool's JSON schema:
+
+#+BEGIN_SRC json
+{
+  "type": "function",
+  "function": {
+    "name": "get_divination_result",
+    "description": "Get a divination result. Use this whenever the story calls for a moment of fate or a character consults the supernatural.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The question or context for the divination."
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "additionalProperties": false
+    },
+    "strict": true
+  }
+}
+#+END_SRC
+
+Then asked AI to turn the code block into an emacs-lisp alist:
+
+#+NAME: orga_tool_schema__get_divination_result
+#+BEGIN_SRC emacs-lisp :noweb-ref include-tool-schema--get-divination-result
+(
+  (type . "function")
+  ("function" . (
+  (name . "get_divination_result")
+  (description . "Get a divination result. Use this whenever the story calls for a moment of fate or a character consults the supernatural.")
+  (parameters . (
+    (type . "object")
+    (properties . (
+      (prompt . (
+        (type . "string")
+        (description . "The question or context for the divination."))
+      )
+    ))
+    (required . ["prompt"])
+    (additionalProperties . :json-false))
+  )
+  (strict . t)))
+)
+#+END_SRC
+
+Lastly, we have this tool's implementation written in emacs-lisp:
+
+#+NAME: orga_tool_implementation__get_divination_result
+#+BEGIN_SRC emacs-lisp
+(format "TOOL_NOT_IMPLEMENTED: %s requires human input" "get_divination_result")
+#+END_SRC
+
+** dominate_the_world :disabled:
+Allows the AI to dominate the world. Obviously should not be implemented nor called. A toy tool to demonstrate how to toggle off a tool.
+
+Below is a human-readable JSON schema:
+
+#+BEGIN_SRC json
+{
+  "type": "function",
+  "function": {
+    "name": "dominate_the_world",
+    "description": "Dominates the world; involves much evilness.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "strict": true
+  }
+}
+#+END_SRC
+
+Then, it's turned into emacs-lisp alist by the AI:
+
+#+NAME: orga_tool_schema__dominate_the_world
+#+BEGIN_SRC emacs-lisp :noweb-ref include-tool-schema--dominate-the-world
+((name . "dominate_the_world")
+ ("function" . (
+  (description . "Dominates the world; involves much evilness.")
+  (parameters . ((type . "object")
+                 (properties)
+                 (required . [])
+                 (additionalProperties . :json-false)))
+  (strict . t))))
+#+END_SRC
+
+Lastly, this is the implementation, written in python:
+
+#+NAME: orga_tool_implementation__dominate_the_world
+#+BEGIN_SRC python
+raise NotImplementedError("I am not doing this.")
+#+END_SRC
+
+** Available Tools
+Obvuously, we only want to expose some of the tools to the AI.
+Don't know how to do this, but I'll manually write it here:
+
+#+NAME: orga__tools
+#+BEGIN_SRC emacs-lisp :noweb yes
+'(
+  <<orga_tool_schema__get_divination_result>>
+  )
+#+END_SRC
+
 * System Prompt
-CYOA：西洋劍與魔法的奇幻世界大冒險！
-限制：僅使用純文字，嚴禁使用Markdown，角色交談時使用引號。
 
 * Chat History
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-06 22:09
+:DATE: 2026-06-11 05:01
 :END:
-「哎呀，好久沒來酒館了，」我推開了大門，「今天有什麼任務委託可以接呢？」
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-06 22:09
-:FINISH_REASON: stop
-:TOKENS_IN: 928
-:TOKENS_OUT: 2190
-:TOKENS_REASONING: 1493
-:COST_USD: 0.021102
-:END:
-:REASONING:
-**Exploring Western Fantasy Concepts**
-
-I'm currently delving into the intersection of Western aesthetics and sword-and-sorcery fantasy. The challenge lies in blending the grit and lawlessness of the West with the magic and mythical creatures of fantasy. My focus is on how to naturally integrate these disparate elements to create a cohesive and compelling narrative.
-
-**Gathering Western Tavern Ambiance**
-
-I'm focusing on establishing the rough, lived-in feel of a Western fantasy tavern. My current thoughts revolve around sensory details: the scent of stale ale and roasted meat, the clatter of dice, and the murmur of conversations. I'm also considering how to introduce an NPC who can offer a quest hook naturally within this setting.
-
-**Weaving Tavern Encounters**
-
-I'm working on bringing the "Gilded Gryphon" to life with specific details. The dialogue with the bartender, Rain, and the quest board options feel like a solid foundation for player interaction. I'm considering how to flesh out the atmosphere further with more character snippets.
-
-**Discovering Cellar Mysteries**
-
-I'm now focusing on the sounds emanating from the tavern's cellar. This offers a classic starting point for a quest, but I'm aiming for a unique twist to make it engaging. My thoughts are on crafting an atmosphere that hints at something unusual below.
-
-**Developing Quest Hooks**
-
-I'm now focusing on the specific quest offers presented by the barkeep. I'm considering the details of the merchant's missing daughter, the goblin threat in the "Mist Forest," and the alchemist's need for "Moonpetal Grass" in "Dawn Valley." My thoughts are on how to present these clearly and enticingly.
-
-**Investigating Cellar Disturbances**
-
-I'm currently exploring the sounds from the tavern cellar. My thoughts are focused on crafting an unsettling atmosphere, hinting at something beyond the ordinary beneath our feet. I'm considering how to make this a compelling starting point for a quest, with a unique twist.
-
-
-:END:
-厚重的橡木大門被你推開，伴隨著吱呀聲，酒館內部的熱氣與喧囂瞬間撲面而來。
-空氣中瀰漫著烤肉的焦香、麥芽啤酒的香氣，以及混雜著皮革與汗水的冒險者氣息。
-壁爐裡的柴火劈啪作響，照亮了角落裡正在低聲談判的盜賊，和幾名正喝得面紅耳赤的傭兵。
-
-站在吧台後方的是酒館老闆雷恩，一個身材魁梧、臉上有一道顯眼疤痕的退役冒險者。
-他正用一塊乾淨的抹布擦拭著木杯，抬頭看見你，粗獷的臉上頓時露出了爽朗的笑容。
-
-「喔！這不是好久不見的冒險者嗎？」雷恩大聲說著，順手將一杯剛倒好、冒著白色泡沫的冰涼麥芽酒推到你面前，「今天吹的是什麼風，竟然把你給吹來了？想要找工作的話，你來的正是時候，佈告欄上剛好送來了三個新鮮的委託。」
-
-雷恩轉過身，指了指他身後那面貼滿羊皮紙的木牆。
-
-「第一個委託，是鎮上的富商哈里斯老爺發出的。他的千金在兩天前前往鄰鎮的路上，在『迷霧森林』邊緣失蹤了。哈里斯老爺懸賞了五十枚金幣，要求找回他的女兒。不過那片森林最近傳出有哥布林異常聚集的消息，恐怕沒那麼簡單。」
-
-雷恩接著指向第二張有些泛黃的羊皮紙。
-
-「第二個委託，是當地的鍊金術師協會委託的。他們需要有人前往『晨曦山谷』的深處，採集一種只在滿月之夜綻放的『月光草』。委託報酬是三十枚金幣，外加兩瓶高階回復藥水。那裡倒是不常有強大的魔獸，但山路崎嶇，而且經常有強盜出沒。」
-
-最後，雷恩壓低了聲音，神祕地指了指腳底下。
-
-「第三個……嘿，其實是我私人的委託。最近這幾天，每到深夜，我這酒館的地窖裡就會傳出奇怪的挖掘聲和野獸的低吼。我派去查看的夥計都被嚇得屁滾尿流。如果你願意下去幫我查個清楚，徹底解決這個麻煩，我願意支付你二十枚金幣，外加以後你來我這喝酒一律八折。」
-
-雷恩摟著雙臂，看著你。
-
-「那麼，老朋友，你今天打算挑戰哪一個任務呢？」
-
-請選擇你的下一步：
-選項一：選擇「迷霧森林的救援行動」，尋找富商失蹤的女兒。
-選項二：選擇「晨曦山谷的藥草採集」，為鍊金術師尋找月光草。
-選項三：選擇「酒館地窖的深夜異音」，替老闆雷恩解決地底的隱憂。
-** User
-:PROPERTIES:
-:DATE: 2026-06-06 22:11
-:END:
-「哦？月光草？還記得第一次完成任務的時候，報酬就是月光草標本。他要那東西做什麼？」
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-06 22:11
-:FINISH_REASON: stop
-:TOKENS_IN: 11325
-:TOKENS_OUT: 1437
-:TOKENS_REASONING: 992
-:COST_USD: 0.029920
-:END:
-:REASONING:
-**Recalling First Mission**
-
-I'm reflecting on a past mission where I received Moonlight Grass as a reward. I'm curious about the recipient's intentions for acquiring it, especially considering my initial encounter with the herb.
-
-**Exploring Alchemist's Motives**
-
-I'm now focused on why the Alchemist Guild desires the Moonlight Grass. I'm considering their potential uses for it, especially given its unique properties and my past experience with the herb.
-
-**Investigating Potion Potentials**
-
-I'm piecing together the Alchemist Guild's interest in Moonlight Grass. My current thoughts suggest it's a key ingredient for advanced recovery, mana regeneration, or possibly illusion/divination potions. Leyton, a former adventurer, should have some insight into this alchemical gossip.
-
-**Gathering Herbal Intel**
-
-My focus has shifted to the practical applications of Moonlight Grass. I've realized it's crucial for restoring mages and knights suffering from spell overload or mental trauma, and also as a component in potent healing potions. The urgency of a full moon tonight means a prompt departure to Sunken Valley is necessary, though dangers lurk there. I need to decide if I'll accept the herb-gathering quest or consider other options.
-
-
-:END:
-雷恩停下手上的動作，露出一副懷念的神情，隨後哈哈大笑了兩聲，粗獷的笑聲在吧台周圍迴盪。
-
-「你這小子的記性倒是不錯。沒錯，那時候你才剛拿著一把缺口的鐵劍，一轉眼都成能獨當一面的冒險者了。」
-
-雷恩壓低了身體，湊近你低聲解釋道。
-
-「至於鍊金術師協會那些老傢伙要月光草做什麼？那玩意兒可稀罕了。月光草只在滿月時吸收純淨的月華綻放，裡面蘊含著極其溫和卻強大的魔力活性。聽說協會最近在研製一種新型的『精神舒緩劑』，專門用來穩定那些因為過度施法而魔力暴走，或者是受到精神創傷的奇蹟牧師。當然，高級的回復藥水要是少了它當調和劑，藥效也會大打折扣。」
-
-雷恩直起身體，指了指窗外漸漸西斜的太陽。
-
-「對了，今天晚上剛好就是滿月。如果你打算接這個委託，現在就得趕緊出發前往晨曦山谷了。否則錯過今晚，那些花朵就會重新閉合，得再等上整整一個月。不過，晚上的晨曦山谷可不太平，強盜和夜行魔獸最喜歡在這種時候伏擊落單的旅人。你決定好了嗎？要接下這個任務，還是再考慮看看其他兩個？」
-
-請選擇你的下一步：
-
-選項一：決定了，接下「晨曦山谷的藥草採集」任務，立刻整備裝備出發。
-
-選項二：時間太趕了，還是換一個，改接「迷霧森林的救援行動」去尋找富商千金。
-
-選項三：不想在夜間出遠門，決定留在酒館，接下「酒館地窖的深夜異音」任務。
-** User
-:PROPERTIES:
-:DATE: 2026-06-06 22:13
-:END:
-「雷恩老爹！這個任務我就接了！外加一杯行前麥酒！」
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-06 22:13
-:FINISH_REASON: stop
-:TOKENS_IN: 18042
-:TOKENS_OUT: 1398
-:TOKENS_REASONING: 749
-:COST_USD: 0.039645
-:END:
-:REASONING:
-**Accepting the Mission**
-
-I've decided to take on this particular task and have also ordered an ale to go with it.
-
-**Embarking on the Quest**
-
-I've accepted the "Dawn Valley Herb Gathering" quest for Moonlight Grass and am now preparing for the journey. Rayne, the barkeep, seems amused by my enthusiasm and is offering me a drink and potentially some useful advice as I get ready to depart.
-
-**Gathering Supplies and Intel**
-
-Rayne, the barkeep, has provided me with a pouch of energy-boosting dried rations and a map of Dawn Valley, warning of its shifting terrain and advising caution regarding bandits and shadow wolves. I've also learned that Moonlight Grass glows faintly under the moonlight and is found near damp cliff faces or streams.
-
-
-:END:
-雷恩聽了哈哈大笑，那隻寬大的手掌猛地一拍吧台，震得空木杯都跳了一下。
-
-「好小子！有幹勁！不愧是我看中的冒險者，這杯行前酒算我請你的！」
-
-雷恩熟練地拉下木桶的把手，將麥酒杯注得滿滿的，乳白色的泡沫順著杯身滑落。他將酒杯重重推到你面前，接著彎腰從櫃檯下翻找了一陣，拿出一份有些磨損的羊皮紙地圖，以及一個裝著乾糧與幾枚解毒藥丸的小布包，一起推給了你。
-
-「拿著吧。這是晨曦山谷的地圖，雖然那裡的岩壁常有小規模塌方、地形有些變動，但總比你瞎子摸黑強。記住，月光草只生長在潮濕的岩壁縫隙或靠近溪流的陰暗處，在滿月照耀下會發出淡淡的藍白色微光，非常好辨認。不過，千萬別因為找花而大意了，山谷裡的影狼在月光下速度極快，而且最近據說有一夥強盜盤踞在入口附近。」
-
-你端起沉甸甸的木杯，一口氣將冰涼清爽、帶著濃郁麥香的啤酒灌下肚。溫熱的感覺隨即在胃裡散開，疲憊一掃而空，體內的鬥志與魔力彷彿也隨之沸騰了起來。
-
-告別了雷恩和喧囂的酒館，你整理好腰間的佩劍與法術書，踏著夕陽的餘暉走出了小鎮。
-
-當你抵達晨曦山谷的入口時，夕陽已經完全沉入地平線下。夜幕低垂，一輪巨大而皎潔的銀色滿月緩緩升起，將整片荒野與前方險峻的山谷披上一層銀紗。遠處隱隱傳來幾聲淒厲的狼嗥。
-
-看著眼前的山谷，你發現有兩條路可以通往地圖上標示著月光草生長深谷：
-
-選項一：選擇「蜿蜒的谷底主道」。這條路平坦寬敞，前進速度最快，但兩側高聳的峭壁極易遭遇強盜設下的落石伏擊。
-
-選項二：選擇「陡峭的峭壁古道」。這是一條沿著山脊攀爬的廢棄小徑，道路狹窄崎嶇且沒有護欄，走起來極其消耗體力，但視野開闊，比較不容易被埋伏。
-
-選項三：選擇「沿著乾涸的暗河河道」。從山谷側面的隱秘洞穴進入地下河床，雖然完全沒有光線、地勢陰濕，但可以直接繞過大部分地面上的野獸與強盜。
-** Input
+Run a divination. I want to know if Harry Potter would love my baked treats if he's here.
