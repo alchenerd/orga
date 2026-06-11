@@ -262,6 +262,45 @@ Signals an error on HTTP or parse failure."
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
+;;; -- Tool collection ---------------------------------------------------------
+
+(defun orga/collect-tools ()
+  "Parse the * Tools section and return a list of tool schema alists.
+Each ** heading whose name matches a `orga_tool_schema__*' src block is
+included, unless the heading carries a :disabled: tag, in which case the
+entire subtree is skipped.
+The src block body is evaluated as Emacs Lisp to produce the alist."
+  (let (tools)
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^\\* Tools" nil t)
+        (error "OrgA: no '* Tools' section found"))
+      (let ((section-end (save-excursion (org-end-of-subtree t) (point))))
+        (while (re-search-forward "^\\*\\* " section-end t)
+          (let* ((heading-line (thing-at-point 'line t))
+                 (disabled (string-match ":disabled:" heading-line))
+                 (subtree-end (save-excursion (org-end-of-subtree t) (point))))
+            (unless disabled
+              ;; Look for an orga_tool_schema__* named src block in this subtree
+              (save-excursion
+                (while (re-search-forward
+                        "#\\+NAME:[ \t]+\\(orga_tool_schema__[^\n]+\\)" subtree-end t)
+                  (let ((block-name (string-trim (match-string 1))))
+                    ;; Find the #+BEGIN_SRC immediately following the #+NAME:
+                    (when (re-search-forward "#\\+BEGIN_SRC emacs-lisp" subtree-end t)
+                      (forward-line 1)
+                      (let* ((beg (point))
+                             (end (progn
+                                    (re-search-forward "#\\+END_SRC" subtree-end t)
+                                    (match-beginning 0)))
+                             (src (buffer-substring-no-properties beg end))
+                             (schema (ignore-errors (eval (read src)))))
+                        (when schema
+                          (push schema tools))))))))
+            ;; Advance past this subtree
+            (goto-char subtree-end)))))
+    (nreverse tools)))
+
 ;;; -- Chat cycle --------------------------------------------------------------
 
 (defun orga/read-input-heading ()
@@ -310,7 +349,7 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
        ;; Toggle dry-run with C-c C-d; C-c C-v always attempts to send.
        (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
        (let* ((context           (orga/create-context))
-              (tools             '<<orga__tools()>>)
+              (tools             (orga/collect-tools))
               (response          (orga/call-api model context tools orga/dry-run))
               (ai-reply          (plist-get response :content))
               (finish-reason     (or (plist-get response :finish-reason) "unknown"))
@@ -409,8 +448,8 @@ Below is the tool's JSON schema:
 Then asked AI to turn the code block into an emacs-lisp alist:
 
 #+NAME: orga_tool_schema__get_divination_result
-#+BEGIN_SRC emacs-lisp :noweb-ref include-tool-schema--get-divination-result
-(
+#+BEGIN_SRC emacs-lisp
+'(
   (type . "function")
   ("function" . (
   (name . "get_divination_result")
@@ -462,8 +501,8 @@ Below is a human-readable JSON schema:
 Then, it's turned into emacs-lisp alist by the AI:
 
 #+NAME: orga_tool_schema__dominate_the_world
-#+BEGIN_SRC emacs-lisp :noweb-ref include-tool-schema--dominate-the-world
-((name . "dominate_the_world")
+#+BEGIN_SRC emacs-lisp
+'((name . "dominate_the_world")
  ("function" . (
   (description . "Dominates the world; involves much evilness.")
   (parameters . ((type . "object")
@@ -480,23 +519,8 @@ Lastly, this is the implementation, written in python:
 raise NotImplementedError("I am not doing this.")
 #+END_SRC
 
-** Available Tools
-Obvuously, we only want to expose some of the tools to the AI.
-Don't know how to do this, but I'll manually write it here:
-
-#+NAME: orga__tools
-#+BEGIN_SRC emacs-lisp :noweb yes
-'(
-  <<orga_tool_schema__get_divination_result>>
-  )
-#+END_SRC
-
 * System Prompt
 
 * Chat History
-
-** User
-:PROPERTIES:
-:DATE: 2026-06-11 05:01
-:END:
+** Input
 Run a divination. I want to know if Harry Potter would love my baked treats if he's here.
