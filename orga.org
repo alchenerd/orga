@@ -69,9 +69,16 @@ Result is trimmed."
 
 (defun orga/collect-history ()
   "Return the full chat history as a vector of OpenAI-style message alists.
-Scans ** User, ** Input, ** Assistant, and ** Tool headings inside * Chat History.
+Scans ** User, ** Input, ** Assistant, ** Assistant Tool Call, and ** Tool
+headings inside * Chat History.
 All Org metadata (property drawers, :REPLY: wrappers) is stripped so only
-plain content reaches the API."
+plain content reaches the API.
+
+For ** Assistant Tool Call headings the :TOOL_CALLS_JSON: property is
+decoded back into the tool_calls array expected by the API.
+
+For ** Tool headings the :TOOL_CALL_ID: and :FUNCTION_NAME: properties
+supply the metadata; the subtree body is the tool result content."
   (let (messages)
     (save-excursion
       (goto-char (point-min))
@@ -79,17 +86,60 @@ plain content reaches the API."
         (error "OrgA: no '* Chat History' section found"))
       (let ((section-end (save-excursion (org-end-of-subtree t) (point))))
         (while (re-search-forward
-                "^\\*\\* \\(User\\|Input\\|Assistant\\|Tool\\)" section-end t)
+                "^\\*\\* \\(User\\|Input\\|Assistant Tool Call\\|Assistant\\|Tool\\)"
+                section-end t)
           (let* ((kind    (match-string 1))
-                 (role    (pcase kind
-                            ("Assistant" "assistant")
-                            ("Tool"      "tool")
-                            ("User"      "user")
-                            ("Input"     "user")
-                            (_           (error "OrgA: unknown heading kind: %s" kind))))
+                 (props   (save-excursion
+                            (forward-line 1)
+                            (when (looking-at "[ \t]*:PROPERTIES:")
+                              (let ((drawer-start (point))
+                                    (drawer-end   (progn
+                                                    (re-search-forward "^[ \t]*:END:" nil t)
+                                                    (point))))
+                                (let ((text (buffer-substring-no-properties
+                                             drawer-start drawer-end)))
+                                  text)))))
+                 (get-prop (lambda (name)
+                             (when props
+                               (when (string-match
+                                      (concat ":" name ":[ \t]+\\([^\n]+\\)") props)
+                                 (string-trim (match-string 1 props))))))
                  (content (encode-coding-string (orga/subtree-body) 'utf-8)))
-            (unless (string-empty-p content)
-              (push `(("role" . ,role) ("content" . ,content)) messages))))))
+            (pcase kind
+              ;; Plain user message
+              ((or "User" "Input")
+               (unless (string-empty-p content)
+                 (push `(("role" . "user") ("content" . ,content)) messages)))
+
+              ;; Regular assistant text reply
+              ("Assistant"
+               (unless (string-empty-p content)
+                 (push `(("role" . "assistant") ("content" . ,content)) messages)))
+
+              ;; Assistant message that contained tool calls -- reconstruct
+              ;; the tool_calls array from the stored JSON property.
+              ("Assistant Tool Call"
+               (let* ((tc-json (funcall get-prop "TOOL_CALLS_JSON"))
+                      (json-object-type 'alist)
+                      (json-array-type  'vector)
+                      (tc-parsed (when tc-json
+                                   (ignore-errors (json-read-from-string tc-json)))))
+                 (when tc-parsed
+                   (push `(("role"       . "assistant")
+                           ("content"    . :null)
+                           ("tool_calls" . ,tc-parsed))
+                         messages))))
+
+              ;; Tool result message
+              ("Tool"
+               (let ((call-id (funcall get-prop "TOOL_CALL_ID"))
+                     (fn-name (funcall get-prop "FUNCTION_NAME")))
+                 (when (and call-id (not (string-empty-p content)))
+                   (push `(("role"         . "tool")
+                           ("tool_call_id" . ,call-id)
+                           ("name"         . ,(or fn-name ""))
+                           ("content"      . ,content))
+                         messages)))))))))
     (vconcat (nreverse messages))))
 
 ;;; -- System prompt -----------------------------------------------------------
@@ -173,8 +223,9 @@ TOOLS is an optional list of tool-schema alists to include in the payload.
 When DRY-RUN is non-nil, pretty-print the payload to *OrgA Dry Run* instead
 of sending it and return nil.
 Returns a plist with the following keys:
-  :content        – assistant reply string
+  :content        – assistant reply string, or nil when finish-reason is tool_calls
   :finish-reason  – \"stop\", \"length\", \"tool_calls\", etc., or nil
+  :tool-calls     – vector of tool_call alists from the API, or nil
   :reasoning      – chain-of-thought text from reasoning_details, or nil
   :provider       – upstream provider string (e.g. \"Google\"), or nil
   :tokens-in      – prompt token count, or nil
@@ -221,10 +272,16 @@ Signals an error on HTTP or parse failure."
             (if (and choices (> (length choices) 0))
                 (let* ((choice        (aref choices 0))
                        (message-obj   (cdr (assoc 'message choice)))
-                       (content       (or (when-let ((s (cdr (assoc 'content message-obj))))
-                                            (decode-coding-string s 'utf-8))
-                                          (error "OrgA: missing content in response")))
+                       (content       (when-let ((s (cdr (assoc 'content message-obj))))
+                                        (and (not (eq s :null))
+                                             (not (string-empty-p s))
+                                             (decode-coding-string s 'utf-8))))
                        (finish-reason (cdr (assoc 'finish_reason choice)))
+                       ;; -- tool_calls: present when finish_reason is "tool_calls" --
+                       (tool-calls    (let ((tc (cdr (assoc 'tool_calls message-obj))))
+                                        (and tc (not (eq tc :null))
+                                             (> (length tc) 0)
+                                             tc)))
                        ;; -- reasoning: pull the first reasoning.text entry ------
                        (reasoning
                         (let* ((details (cdr (assoc 'reasoning_details message-obj)))
@@ -248,6 +305,7 @@ Signals an error on HTTP or parse failure."
                         :finish-reason    (when (and finish-reason
                                                      (not (eq finish-reason :null)))
                                             finish-reason)
+                        :tool-calls       tool-calls
                         :reasoning        reasoning
                         :provider         provider
                         :tokens-in        (when (and tokens-in (not (eq tokens-in :null)))
@@ -315,99 +373,223 @@ TEXT is the trimmed body (excluding any property drawer)."
              (end   (progn (org-end-of-subtree t) (point))))
         (list start end text)))))
 
+(defun orga/pending-tool-results-p ()
+  "Return non-nil when the chat is awaiting tool results.
+This is the case when the last substantive heading in * Chat History is
+'** Assistant Tool Call' and every following '** Tool' heading has a
+non-empty body (i.e. the user has filled in all results)."
+  (save-excursion
+    (goto-char (point-min))
+    (unless (re-search-forward "^\\* Chat History" nil t)
+      (cl-return nil))
+    (let* ((section-end (save-excursion (org-end-of-subtree t) (point)))
+           ;; Find the last ** Assistant Tool Call in the section
+           (last-tc-pos
+            (save-excursion
+              (let (pos)
+                (while (re-search-forward "^\\*\\* Assistant Tool Call" section-end t)
+                  (setq pos (match-beginning 0)))
+                pos))))
+      (when last-tc-pos
+        ;; Collect all ** Tool headings that appear after it
+        (goto-char last-tc-pos)
+        (let ((tc-end (save-excursion (org-end-of-subtree t) (point)))
+              (tool-headings '()))
+          ;; Tool headings are siblings after the Assistant Tool Call
+          (save-excursion
+            (goto-char tc-end)
+            (while (re-search-forward "^\\*\\* Tool" section-end t)
+              (push (point) tool-headings)))
+          ;; There must be at least one Tool heading, and every one must be filled
+          (and tool-headings
+               (cl-every
+                (lambda (pos)
+                  (save-excursion
+                    (goto-char pos)
+                    (not (string-empty-p (orga/subtree-body)))))
+                tool-headings)))))))
+
 (defun ai-chat-cycle ()
-  "Commit the ** Input heading as a ** User message, call the AI, and append
-a ** Assistant reply.  The reply block contains:
-  - :PROPERTIES: with :MODEL:, :PROVIDER:, :DATE:, :FINISH_REASON:,
-    :TOKENS_IN:, :TOKENS_OUT:, :TOKENS_REASONING:, :COST_USD:
-  - A :REASONING:...:END: drawer with the model's chain-of-thought (if any)
-  - The plain assistant reply text
+  "Send the current turn to the AI and append the reply.
 
-The :REASONING: drawer is stripped from context before the next API call
-so chain-of-thought never leaks back to the model.
+Two modes are detected automatically:
 
-Then inserts a fresh ** Input heading at the end, ready for the next message.
+NORMAL MODE — a ** Input heading exists with content:
+  The heading is committed as a dated ** User message, the API is called,
+  and a ** Assistant reply is appended followed by a fresh ** Input.
+
+TOOL-RESULT MODE — the last ** Assistant Tool Call heading is present and
+  every subsequent ** Tool sibling has a non-empty body:
+  No ** Input conversion takes place.  The filled tool results are already
+  part of the history (via orga/collect-history).  The API is called and
+  the reply is appended followed by a fresh ** Input.
+
+When the model itself responds with tool calls (finish_reason = tool_calls):
+  - A ** Assistant Tool Call heading is inserted with :TOOL_CALLS_JSON:.
+  - One ** Tool heading per call with :TOOL_CALL_ID:, :FUNCTION_NAME:,
+    :ARGUMENTS: and either a #+CALL: line or a placeholder comment.
+  - No ** Input is appended; C-c C-v again after filling the results.
+
 Bound to C-c C-v by the file-local eval cookie at the top of this file."
   (interactive)
-  (pcase (orga/read-input-heading)
-    ('nil
-     (message "OrgA: no ** Input heading found."))
-    (`(,start ,end ,user-text)
-     (when (string-empty-p user-text)
-       (user-error "OrgA: ** Input is empty -- write something first"))
-     (let ((model     <<openrouter_model>>)
-           (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+  (let ((model     <<openrouter_model>>)
+        (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+    (cond
 
-       ;; 1. Overwrite the ** Input subtree with a dated ** User entry
-       (delete-region start end)
-       (goto-char (point-max))
-       (unless (bolp) (insert "\n"))
-       (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
-                       timestamp user-text))
+     ;; -----------------------------------------------------------------------
+     ;; TOOL-RESULT MODE: all ** Tool bodies are filled — send results to API.
+     ;; -----------------------------------------------------------------------
+     ((orga/pending-tool-results-p)
+      (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
+      (let* ((context  (orga/create-context))
+             (tools    (orga/collect-tools))
+             (response (orga/call-api model context tools orga/dry-run)))
+        (orga/handle-response response model timestamp)))
 
-       ;; 2. Build context window (history + injections) and call API
-       ;; Toggle dry-run with C-c C-d; C-c C-v always attempts to send.
-       (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
-       (let* ((context           (orga/create-context))
-              (tools             (orga/collect-tools))
-              (response          (orga/call-api model context tools orga/dry-run))
-              (ai-reply          (plist-get response :content))
-              (finish-reason     (or (plist-get response :finish-reason) "unknown"))
-              (reasoning         (plist-get response :reasoning))
-              (provider          (or (plist-get response :provider) ""))
-              (tokens-in         (plist-get response :tokens-in))
-              (tokens-out        (plist-get response :tokens-out))
-              (tokens-reasoning  (plist-get response :tokens-reasoning))
-              (cost              (plist-get response :cost)))
-
-         ;; 3. Append assistant reply (skipped on dry-run; response is nil)
-         (when (null response) (cl-return-from ai-chat-cycle nil))
+     ;; -----------------------------------------------------------------------
+     ;; NORMAL MODE: commit ** Input as ** User and call API.
+     ;; -----------------------------------------------------------------------
+     (t
+      (pcase (orga/read-input-heading)
+        ('nil
+         (message "OrgA: nothing to send (no ** Input and no pending tool results)."))
+        (`(,start ,end ,user-text)
+         (when (string-empty-p user-text)
+           (user-error "OrgA: ** Input is empty -- write something first"))
+         ;; 1. Overwrite the ** Input subtree with a dated ** User entry
+         (delete-region start end)
          (goto-char (point-max))
          (unless (bolp) (insert "\n"))
+         (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
+                         timestamp user-text))
+         ;; 2. Call API
+         (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
+         (let* ((context  (orga/create-context))
+                (tools    (orga/collect-tools))
+                (response (orga/call-api model context tools orga/dry-run)))
+           (orga/handle-response response model timestamp)))))))
 
-         ;; 3a. Heading + :PROPERTIES: drawer
-         (insert (format (concat "** Assistant\n"
-                                 ":PROPERTIES:\n"
-                                 ":MODEL: %s\n"
-                                 ":PROVIDER: %s\n"
-                                 ":DATE: %s\n"
-                                 ":FINISH_REASON: %s\n"
-                                 ":TOKENS_IN: %s\n"
-                                 ":TOKENS_OUT: %s\n"
-                                 ":TOKENS_REASONING: %s\n"
-                                 ":COST_USD: %s\n"
-                                 ":END:\n")
-                         model
-                         provider
-                         timestamp
-                         finish-reason
-                         (or tokens-in "")
-                         (or tokens-out "")
-                         (or tokens-reasoning "")
-                         (if cost (format "%.6f" cost) "")))
+(defun orga/handle-response (response model timestamp)
+  "Insert RESPONSE (from `orga/call-api') into the buffer.
+MODEL and TIMESTAMP are strings used in the inserted headings.
+Dispatches on finish-reason: tool_calls → scaffold ** Tool headings;
+anything else → insert ** Assistant reply and a fresh ** Input."
+  (when (null response) (cl-return-from orga/handle-response nil))
+  (let* ((ai-reply         (plist-get response :content))
+         (finish-reason    (or (plist-get response :finish-reason) "unknown"))
+         (tool-calls       (plist-get response :tool-calls))
+         (reasoning        (plist-get response :reasoning))
+         (provider         (or (plist-get response :provider) ""))
+         (tokens-in        (plist-get response :tokens-in))
+         (tokens-out       (plist-get response :tokens-out))
+         (tokens-reasoning (plist-get response :tokens-reasoning))
+         (cost             (plist-get response :cost)))
 
-         ;; 3b. :REASONING: drawer (omitted when model returns no reasoning)
-         (when (and reasoning (not (string-empty-p reasoning)))
-           (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
 
-         ;; 3c. Plain reply text
-         (insert (format "%s\n" ai-reply))
+    (if (string= finish-reason "tool_calls")
+        ;; -------------------------------------------------------------------
+        ;; The model wants to call tools.
+        ;; -------------------------------------------------------------------
+        (progn
+          ;; a. ** Assistant Tool Call heading + metadata
+          ;;    :TOOL_CALLS_JSON: stores the raw array for lossless replay.
+          (insert (format (concat "** Assistant Tool Call\n"
+                                  ":PROPERTIES:\n"
+                                  ":MODEL: %s\n"
+                                  ":PROVIDER: %s\n"
+                                  ":DATE: %s\n"
+                                  ":FINISH_REASON: %s\n"
+                                  ":TOKENS_IN: %s\n"
+                                  ":TOKENS_OUT: %s\n"
+                                  ":TOKENS_REASONING: %s\n"
+                                  ":COST_USD: %s\n"
+                                  ":TOOL_CALLS_JSON: %s\n"
+                                  ":END:\n")
+                          model provider timestamp finish-reason
+                          (or tokens-in "")
+                          (or tokens-out "")
+                          (or tokens-reasoning "")
+                          (if cost (format "%.6f" cost) "")
+                          (json-encode tool-calls)))
+          ;; b. Optional :REASONING: drawer
+          (when (and reasoning (not (string-empty-p reasoning)))
+            (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
+          (save-excursion
+            (re-search-backward "^\\*\\* Assistant Tool Call" nil t)
+            (if (fboundp 'org-fold-hide-drawer-all)
+                (org-fold-hide-drawer-all)
+              (org-hide-drawer-all)))
 
-         ;; 3d. Fold drawers in the new Assistant subtree
-         (save-excursion
-           (re-search-backward "^\\*\\* Assistant" nil t)
-           (if (fboundp 'org-fold-hide-drawer-all)
-               (org-fold-hide-drawer-all)
-             (org-hide-drawer-all)))
+          ;; c. One ** Tool heading per tool call — NO ** Input follows.
+          (mapc
+           (lambda (tc)
+             (let* ((call-id    (or (cdr (assoc 'id tc)) ""))
+                    (fn-alist   (cdr (assoc 'function tc)))
+                    (fn-name    (or (cdr (assoc 'name fn-alist)) ""))
+                    (fn-args    (or (cdr (assoc 'arguments fn-alist)) "{}"))
+                    (impl-block (concat "orga_tool_implementation__" fn-name)))
+               (goto-char (point-max))
+               (unless (bolp) (insert "\n"))
+               (insert (format (concat "** Tool\n"
+                                       ":PROPERTIES:\n"
+                                       ":TOOL_CALL_ID: %s\n"
+                                       ":FUNCTION_NAME: %s\n"
+                                       ":ARGUMENTS: %s\n"
+                                       ":END:\n")
+                               call-id fn-name fn-args))
+               (save-excursion
+                 (re-search-backward "^\\*\\* Tool" nil t)
+                 (if (fboundp 'org-fold-hide-drawer-all)
+                     (org-fold-hide-drawer-all)
+                   (org-hide-drawer-all)))
+               (if (save-excursion
+                     (goto-char (point-min))
+                     (re-search-forward
+                      (concat "#\\+NAME:[ \t]+" (regexp-quote impl-block)) nil t))
+                   (insert (format "#+CALL: %s()\n" impl-block))
+                 (insert (format "# No implementation for %s -- paste result below:\n"
+                                 fn-name)))))
+           (append tool-calls nil))          ; vector → list
 
-         ;; 4. Fresh ** Input heading -- user types here next
-         (goto-char (point-max))
-         (unless (bolp) (insert "\n"))
-         (insert "** Input\n")
+          (org-reveal)
+          (goto-char (point-max))
+          (message "OrgA: tool call(s) received -- fill in ** Tool sections, then C-c C-v to continue."))
 
-         (org-reveal)
-         (goto-char (point-max))
-         (message "OrgA: reply received."))))))
+      ;; ---------------------------------------------------------------------
+      ;; Regular assistant text reply — append heading + fresh ** Input.
+      ;; ---------------------------------------------------------------------
+      (insert (format (concat "** Assistant\n"
+                              ":PROPERTIES:\n"
+                              ":MODEL: %s\n"
+                              ":PROVIDER: %s\n"
+                              ":DATE: %s\n"
+                              ":FINISH_REASON: %s\n"
+                              ":TOKENS_IN: %s\n"
+                              ":TOKENS_OUT: %s\n"
+                              ":TOKENS_REASONING: %s\n"
+                              ":COST_USD: %s\n"
+                              ":END:\n")
+                      model provider timestamp finish-reason
+                      (or tokens-in "")
+                      (or tokens-out "")
+                      (or tokens-reasoning "")
+                      (if cost (format "%.6f" cost) "")))
+      (when (and reasoning (not (string-empty-p reasoning)))
+        (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
+      (insert (format "%s\n" ai-reply))
+      (save-excursion
+        (re-search-backward "^\\*\\* Assistant" nil t)
+        (if (fboundp 'org-fold-hide-drawer-all)
+            (org-fold-hide-drawer-all)
+          (org-hide-drawer-all)))
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert "** Input\n")
+      (org-reveal)
+      (goto-char (point-max))
+      (message "OrgA: reply received.")))))
 
 (message "OrgA loaded -- C-c C-v to send.")
 #+END_SRC
@@ -522,5 +704,127 @@ raise NotImplementedError("I am not doing this.")
 * System Prompt
 
 * Chat History
+
+** User
+:PROPERTIES:
+:DATE: 2026-06-12 02:50
+:END:
+Run three divinations. I want to know if Harry Potter, Ron Weasley, and Hermione Granger would love my baked treats if they're here. Each person needs one divination.
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-12 02:50
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 90
+:TOKENS_OUT: 275
+:TOKENS_REASONING: 184
+:COST_USD: 0.002610
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_get_divination_result_jWd3Qv3N07CCLrWGjCdy","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Harry Potter love my baked treats if he were here?\"}"}},{"type":"function","index":1,"id":"tool_get_divination_result_nNwA71qhyjCn9zNq4WZ8","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Ron Weasley love my baked treats if he were here?\"}"}},{"type":"function","index":2,"id":"tool_get_divination_result_wTE4USgsGXz57Uc40THv","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Hermione Granger love my baked treats if she were here?\"}"}}]
+:END:
+:REASONING:
+**Running Divinations Now**
+
+I'm initiating three divinations to gauge Harry, Ron, and Hermione's potential delight with your baked goods. The process involves querying the divination tool for each character individually.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_get_divination_result_jWd3Qv3N07CCLrWGjCdy
+:FUNCTION_NAME: get_divination_result
+:ARGUMENTS: {"prompt":"Would Harry Potter love my baked treats if he were here?"}
+:END:
+#+CALL: orga_tool_implementation__get_divination_result()
+
+#+RESULTS:
+Harry Potter would love your treats!
+
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_get_divination_result_nNwA71qhyjCn9zNq4WZ8
+:FUNCTION_NAME: get_divination_result
+:ARGUMENTS: {"prompt":"Would Ron Weasley love my baked treats if he were here?"}
+:END:
+#+CALL: orga_tool_implementation__get_divination_result()
+
+#+RESULTS:
+Ron Weasley is currently vomiting slugs; he will have to miss out.
+
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_get_divination_result_wTE4USgsGXz57Uc40THv
+:FUNCTION_NAME: get_divination_result
+:ARGUMENTS: {"prompt":"Would Hermione Granger love my baked treats if she were here?"}
+:END:
+#+CALL: orga_tool_implementation__get_divination_result()
+
+#+RESULTS:
+Hermione Granger would find your baked treats not sweet enough; she will not show out of politeness, but she secretly desires more.
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-12 02:54
+:FINISH_REASON: stop
+:TOKENS_IN: 315
+:TOKENS_OUT: 387
+:TOKENS_REASONING: 119
+:COST_USD: 0.003955
+:END:
+:REASONING:
+**Divining Wizardly Cravings**
+
+I've completed the divinations for Harry, Ron, and Hermione regarding their enjoyment of baked goods. The first divination, concerning Harry, has yielded its result.
+
+
+:END:
+Here are the results of the divinations for each of the three friends:
+
+### **Harry Potter**
+🔮 **The Divination:** Harry would absolutely love your baked treats! 
+*It seems your baking is just the comfort food a Boy Who Lived needs after a long day of dealing with dark wizards and saving the world. He’d gladly take a second helping.*
+
+---
+
+### **Ron Weasley**
+🔮 **The Divination:** Ron is currently vomiting slugs and will have to miss out. 
+*Oh dear... it seems Ron has had another unfortunate backfire with his wand! While he would usually be the first to clear a plate of delicious baked goods, he is currently preoccupied with a bucket and a very slimy situation. Best to save some for him when his stomach settles!*
+
+---
+
+### **Hermione Granger**
+🔮 **The Divination:** Hermione would find your baked treats not sweet enough; she will not show out of politeness, but she secretly desires more.
+*Hermione is ever the polite and intellectual one! She wouldn't want to hurt your feelings, so she might make an excuse to stay in the library. However, deep down, she has a secret sweet tooth and wishes there was just a twist more sugar in the recipe to satisfy her cravings.*
 ** Input
-Run a divination. I want to know if Harry Potter would love my baked treats if he's here.
+Great! Looks like I need to add more sugar, and save a plate for Ron!
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-12 03:15
+:FINISH_REASON: stop
+:TOKENS_IN: 657
+:TOKENS_OUT: 538
+:TOKENS_REASONING: 410
+:COST_USD: 0.005828
+:END:
+:REASONING:
+**Refining Ingredient Ratios**
+
+I'm currently recalibrating the magical confectionary formula. Initial feedback suggests an increase in sweetness is desired for optimal enjoyment, alongside a strategic reserve for potential adverse reactions, ensuring everyone gets a taste of success.
+
+**Adjusting Magical Confectionary**
+
+I'm fine-tuning the enchanting sweet treat. A touch more sweetness is indeed the objective, and I'm also contemplating a contingency for unexpected outcomes.
+
+
+:END:
+That sounds like the perfect master plan! 
+
+Adjusting the recipe is a brilliant move—even though Hermione’s parents are Muggle dentists, she clearly has a hidden sweet tooth that a little extra sugar will satisfy perfectly. 
+
+And saving a plate for Ron is incredibly kind. Knowing his legendary appetite, once that wretched slug-vomiting charm finally wears off, he will be absolutely thrilled to devour every last crumb you saved for him (and he'll probably try to nick some of Harry's, too!).
+
+Happy baking! May your kitchen smell as wonderful as a feast in the Great Hall! ⚡🧹🧁
+** Input
