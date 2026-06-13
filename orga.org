@@ -374,32 +374,41 @@ TEXT is the trimmed body (excluding any property drawer)."
         (list start end text)))))
 
 (defun orga/pending-tool-results-p ()
-  "Return non-nil when the chat is awaiting tool results.
-This is the case when the last substantive heading in * Chat History is
-'** Assistant Tool Call' and every following '** Tool' heading has a
-non-empty body (i.e. the user has filled in all results)."
-  (save-excursion
-    (goto-char (point-min))
-    (unless (re-search-forward "^\\* Chat History" nil t)
-      (cl-return nil))
-    (let* ((section-end (save-excursion (org-end-of-subtree t) (point)))
-           ;; Find the last ** Assistant Tool Call in the section
-           (last-tc-pos
-            (save-excursion
-              (let (pos)
-                (while (re-search-forward "^\\*\\* Assistant Tool Call" section-end t)
-                  (setq pos (match-beginning 0)))
-                pos))))
-      (when last-tc-pos
-        ;; Collect all ** Tool headings that appear after it
-        (goto-char last-tc-pos)
-        (let ((tc-end (save-excursion (org-end-of-subtree t) (point)))
-              (tool-headings '()))
-          ;; Tool headings are siblings after the Assistant Tool Call
-          (save-excursion
-            (goto-char tc-end)
-            (while (re-search-forward "^\\*\\* Tool" section-end t)
-              (push (point) tool-headings)))
+  "Return non-nil when the chat has tool results ready to send.
+Specifically: the last '** Assistant Tool Call' heading in * Chat History
+is followed by at least one '** Tool' sibling, and every such sibling has
+a non-empty body (i.e. the user has filled in all results).
+
+Returns nil when the history is empty, has no tool calls, or when any
+Tool result body is still empty."
+  (cl-block orga/pending-tool-results-p
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^\\* Chat History" nil t)
+        (cl-return-from orga/pending-tool-results-p nil))
+      (let* ((section-end (save-excursion (org-end-of-subtree t) (point)))
+             ;; Find the last ** Assistant Tool Call in the section
+             (last-tc-pos
+              (save-excursion
+                (let (pos)
+                  (while (re-search-forward "^\\*\\* Assistant Tool Call" section-end t)
+                    (setq pos (match-beginning 0)))
+                  pos))))
+        ;; No tool call heading at all → not in tool-result mode
+        (unless last-tc-pos
+          (cl-return-from orga/pending-tool-results-p nil))
+        ;; Collect ** Tool headings that are siblings after the last tool call
+        (let* ((tc-end (save-excursion
+                         (goto-char last-tc-pos)
+                         (org-end-of-subtree t)
+                         (point)))
+               (tool-headings
+                (save-excursion
+                  (goto-char tc-end)
+                  (let (positions)
+                    (while (re-search-forward "^\\*\\* Tool" section-end t)
+                      (push (match-beginning 0) positions))
+                    (nreverse positions)))))
           ;; There must be at least one Tool heading, and every one must be filled
           (and tool-headings
                (cl-every
@@ -408,66 +417,6 @@ non-empty body (i.e. the user has filled in all results)."
                     (goto-char pos)
                     (not (string-empty-p (orga/subtree-body)))))
                 tool-headings)))))))
-
-(defun ai-chat-cycle ()
-  "Send the current turn to the AI and append the reply.
-
-Two modes are detected automatically:
-
-NORMAL MODE — a ** Input heading exists with content:
-  The heading is committed as a dated ** User message, the API is called,
-  and a ** Assistant reply is appended followed by a fresh ** Input.
-
-TOOL-RESULT MODE — the last ** Assistant Tool Call heading is present and
-  every subsequent ** Tool sibling has a non-empty body:
-  No ** Input conversion takes place.  The filled tool results are already
-  part of the history (via orga/collect-history).  The API is called and
-  the reply is appended followed by a fresh ** Input.
-
-When the model itself responds with tool calls (finish_reason = tool_calls):
-  - A ** Assistant Tool Call heading is inserted with :TOOL_CALLS_JSON:.
-  - One ** Tool heading per call with :TOOL_CALL_ID:, :FUNCTION_NAME:,
-    :ARGUMENTS: and either a #+CALL: line or a placeholder comment.
-  - No ** Input is appended; C-c C-v again after filling the results.
-
-Bound to C-c C-v by the file-local eval cookie at the top of this file."
-  (interactive)
-  (let ((model     <<openrouter_model>>)
-        (timestamp (format-time-string "%Y-%m-%d %H:%M")))
-    (cond
-
-     ;; -----------------------------------------------------------------------
-     ;; TOOL-RESULT MODE: all ** Tool bodies are filled — send results to API.
-     ;; -----------------------------------------------------------------------
-     ((orga/pending-tool-results-p)
-      (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
-      (let* ((context  (orga/create-context))
-             (tools    (orga/collect-tools))
-             (response (orga/call-api model context tools orga/dry-run)))
-        (orga/handle-response response model timestamp)))
-
-     ;; -----------------------------------------------------------------------
-     ;; NORMAL MODE: commit ** Input as ** User and call API.
-     ;; -----------------------------------------------------------------------
-     (t
-      (pcase (orga/read-input-heading)
-        ('nil
-         (message "OrgA: nothing to send (no ** Input and no pending tool results)."))
-        (`(,start ,end ,user-text)
-         (when (string-empty-p user-text)
-           (user-error "OrgA: ** Input is empty -- write something first"))
-         ;; 1. Overwrite the ** Input subtree with a dated ** User entry
-         (delete-region start end)
-         (goto-char (point-max))
-         (unless (bolp) (insert "\n"))
-         (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
-                         timestamp user-text))
-         ;; 2. Call API
-         (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
-         (let* ((context  (orga/create-context))
-                (tools    (orga/collect-tools))
-                (response (orga/call-api model context tools orga/dry-run)))
-           (orga/handle-response response model timestamp)))))))
 
 (defun orga/handle-response (response model timestamp)
   "Insert RESPONSE (from `orga/call-api') into the buffer.
@@ -589,7 +538,67 @@ anything else → insert ** Assistant reply and a fresh ** Input."
       (insert "** Input\n")
       (org-reveal)
       (goto-char (point-max))
-      (message "OrgA: reply received.")))))
+      (message "OrgA: reply received."))))
+
+(defun ai-chat-cycle ()
+  "Send the current turn to the AI and append the reply.
+
+Two modes are detected automatically:
+
+NORMAL MODE — a ** Input heading exists with content:
+  The heading is committed as a dated ** User message, the API is called,
+  and a ** Assistant reply is appended followed by a fresh ** Input.
+
+TOOL-RESULT MODE — the last ** Assistant Tool Call heading is present and
+  every subsequent ** Tool sibling has a non-empty body:
+  No ** Input conversion takes place.  The filled tool results are already
+  part of the history (via orga/collect-history).  The API is called and
+  the reply is appended followed by a fresh ** Input.
+
+When the model itself responds with tool calls (finish_reason = tool_calls):
+  - A ** Assistant Tool Call heading is inserted with :TOOL_CALLS_JSON:.
+  - One ** Tool heading per call with :TOOL_CALL_ID:, :FUNCTION_NAME:,
+    :ARGUMENTS: and either a #+CALL: line or a placeholder comment.
+  - No ** Input is appended; C-c C-v again after filling the results.
+
+Bound to C-c C-v by the file-local eval cookie at the top of this file."
+  (interactive)
+  (let ((model     <<openrouter_model>>)
+        (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+    (cond
+
+     ;; -----------------------------------------------------------------------
+     ;; TOOL-RESULT MODE: all ** Tool bodies are filled — send results to API.
+     ;; -----------------------------------------------------------------------
+     ((orga/pending-tool-results-p)
+      (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
+      (let* ((context  (orga/create-context))
+             (tools    (orga/collect-tools))
+             (response (orga/call-api model context tools orga/dry-run)))
+        (orga/handle-response response model timestamp)))
+
+     ;; -----------------------------------------------------------------------
+     ;; NORMAL MODE: commit ** Input as ** User and call API.
+     ;; -----------------------------------------------------------------------
+     (t
+      (pcase (orga/read-input-heading)
+        ('nil
+         (message "OrgA: nothing to send (no ** Input and no pending tool results)."))
+        (`(,start ,end ,user-text)
+         (when (string-empty-p user-text)
+           (user-error "OrgA: ** Input is empty -- write something first"))
+         ;; 1. Overwrite the ** Input subtree with a dated ** User entry
+         (delete-region start end)
+         (goto-char (point-max))
+         (unless (bolp) (insert "\n"))
+         (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
+                         timestamp user-text))
+         ;; 2. Call API
+         (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
+         (let* ((context  (orga/create-context))
+                (tools    (orga/collect-tools))
+                (response (orga/call-api model context tools orga/dry-run)))
+           (orga/handle-response response model timestamp))))))))
 
 (message "OrgA loaded -- C-c C-v to send.")
 #+END_SRC
@@ -598,7 +607,77 @@ anything else → insert ** Assistant reply and a fresh ** Input."
 : OrgA loaded -- C-c C-v to send.
 
 * Tools
-** get_divination_result
+** shell
+The shell tool for AI to call.
+Below is a function schema:
+
+#+BEGIN_SRC json
+{
+  "type": "function",
+  "function": {
+    "name": "execute_shell_command",
+    "description": "Executes a specified shell command in a bash environment and returns the command's standard output (stdout), standard error (stderr), and exit code. Use this tool to run terminal commands, execute scripts, manage files, or inspect system states.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "The bash command to run. Multi-line scripts or piped commands are supported (e.g., 'ls -la | grep txt')."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "The directory path from which to run the command. Defaults to the current working directory of the application process."
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "The maximum execution time in seconds allowed for the command before it is forcefully terminated. Defaults to 30 seconds.",
+          "default": 30
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "strict": true
+  }
+}
+#+END_SRC
+
+Then, we have AI translate this into emacs-lisp equivalent:
+
+#+NAME: orga_tool_schema__execute_shell_command
+#+BEGIN_SRC emacs-lisp
+'((type . "function")
+  ("function" . (
+    (name . "execute_shell_command")
+    (description . "Executes a specified shell command in a bash environment and returns the command's standard output (stdout), standard error (stderr), and exit code. Use this tool to run terminal commands, execute scripts, manage files, or inspect system states.")
+    (parameters . (
+      (type . "object")
+      (properties . (
+        (command . (
+          (type . "string")
+          (description . "The bash command to run. Multi-line scripts or piped commands are supported (e.g., 'ls -la | grep txt').")))
+        (cwd . (
+          (type . "string")
+          (description . "The directory path from which to run the command. Defaults to the current working directory of the application process.")))
+        (timeout_sec . (
+          (type . "integer")
+          (description . "The maximum execution time in seconds allowed for the command before it is forcefully terminated. Defaults to 30 seconds.")
+          (default . 30)))))
+      (required . ["command"])
+      (additionalProperties . :json-false)))
+    (strict . t))))
+#+END_SRC
+
+Lastly, here is a wrapper to shell:
+
+#+NAME: orga_tool_implementation__execute_shell_command
+#+BEGIN_SRC shell :var command="pwd" :var cwd="./" :var timeout_sec=30 
+cd "$cwd" && timeout "$timeout_sec" sh -c "$command"
+#+END_SRC
+
+** get_divination_result :disabled:
 Gets a divination result. Secretly done by the human user. Human user manually handles the tool response.
 
 Below is the tool's JSON schema:
@@ -704,127 +783,74 @@ raise NotImplementedError("I am not doing this.")
 * System Prompt
 
 * Chat History
-
 ** User
 :PROPERTIES:
-:DATE: 2026-06-12 02:50
+:DATE: 2026-06-14 01:02
 :END:
-Run three divinations. I want to know if Harry Potter, Ron Weasley, and Hermione Granger would love my baked treats if they're here. Each person needs one divination.
+Try to execute something that gets the time and date on my machine using tools available.
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-12 02:50
+:DATE: 2026-06-14 01:02
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 90
-:TOKENS_OUT: 275
-:TOKENS_REASONING: 184
-:COST_USD: 0.002610
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_get_divination_result_jWd3Qv3N07CCLrWGjCdy","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Harry Potter love my baked treats if he were here?\"}"}},{"type":"function","index":1,"id":"tool_get_divination_result_nNwA71qhyjCn9zNq4WZ8","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Ron Weasley love my baked treats if he were here?\"}"}},{"type":"function","index":2,"id":"tool_get_divination_result_wTE4USgsGXz57Uc40THv","function":{"name":"get_divination_result","arguments":"{\"prompt\":\"Would Hermione Granger love my baked treats if she were here?\"}"}}]
+:TOKENS_IN: 171
+:TOKENS_OUT: 92
+:TOKENS_REASONING: 74
+:COST_USD: 0.001084
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_XB93ZT4xPdUbBbJyFiL7","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_XB93ZT4xPdUbBbJyFiL7
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"date"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="date"")
+
+#+RESULTS:
+: 西元2026年06月14日 (週日) 01時03分04秒 CST
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-14 01:03
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 359
+:TOKENS_OUT: 325
+:TOKENS_REASONING: 302
+:COST_USD: 0.003463
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_PMNYmwPhUdAhktURf5BG","function":{"name":"execute_shell_command","arguments":"{\"command\":\"LC_ALL=C date\"}"}}]
 :END:
 :REASONING:
-**Running Divinations Now**
+**Decoding Sequences**
 
-I'm initiating three divinations to gauge Harry, Ron, and Hermione's potential delight with your baked goods. The process involves querying the divination tool for each character individually.
+I've identified that the command output seems to contain octal escape or binary sequences. My current focus is on decoding these to reveal the underlying UTF-8 encoded text, likely due to a Chinese locale setting.
 
 
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_get_divination_result_jWd3Qv3N07CCLrWGjCdy
-:FUNCTION_NAME: get_divination_result
-:ARGUMENTS: {"prompt":"Would Harry Potter love my baked treats if he were here?"}
+:TOOL_CALL_ID: tool_execute_shell_command_PMNYmwPhUdAhktURf5BG
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"LC_ALL=C date"}
 :END:
-#+CALL: orga_tool_implementation__get_divination_result()
+#+CALL: orga_tool_implementation__execute_shell_command(command="LC_ALL=C date")
 
 #+RESULTS:
-Harry Potter would love your treats!
-
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_get_divination_result_nNwA71qhyjCn9zNq4WZ8
-:FUNCTION_NAME: get_divination_result
-:ARGUMENTS: {"prompt":"Would Ron Weasley love my baked treats if he were here?"}
-:END:
-#+CALL: orga_tool_implementation__get_divination_result()
-
-#+RESULTS:
-Ron Weasley is currently vomiting slugs; he will have to miss out.
-
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_get_divination_result_wTE4USgsGXz57Uc40THv
-:FUNCTION_NAME: get_divination_result
-:ARGUMENTS: {"prompt":"Would Hermione Granger love my baked treats if she were here?"}
-:END:
-#+CALL: orga_tool_implementation__get_divination_result()
-
-#+RESULTS:
-Hermione Granger would find your baked treats not sweet enough; she will not show out of politeness, but she secretly desires more.
+: Sun Jun 14 01:03:46 CST 2026
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-12 02:54
+:DATE: 2026-06-14 01:03
 :FINISH_REASON: stop
-:TOKENS_IN: 315
-:TOKENS_OUT: 387
-:TOKENS_REASONING: 119
-:COST_USD: 0.003955
+:TOKENS_IN: 439
+:TOKENS_OUT: 146
+:TOKENS_REASONING: 87
+:COST_USD: 0.001972
 :END:
-:REASONING:
-**Divining Wizardly Cravings**
+The current time and date on your machine is:
 
-I've completed the divinations for Harry, Ron, and Hermione regarding their enjoyment of baked goods. The first divination, concerning Harry, has yielded its result.
-
-
-:END:
-Here are the results of the divinations for each of the three friends:
-
-### **Harry Potter**
-🔮 **The Divination:** Harry would absolutely love your baked treats! 
-*It seems your baking is just the comfort food a Boy Who Lived needs after a long day of dealing with dark wizards and saving the world. He’d gladly take a second helping.*
-
----
-
-### **Ron Weasley**
-🔮 **The Divination:** Ron is currently vomiting slugs and will have to miss out. 
-*Oh dear... it seems Ron has had another unfortunate backfire with his wand! While he would usually be the first to clear a plate of delicious baked goods, he is currently preoccupied with a bucket and a very slimy situation. Best to save some for him when his stomach settles!*
-
----
-
-### **Hermione Granger**
-🔮 **The Divination:** Hermione would find your baked treats not sweet enough; she will not show out of politeness, but she secretly desires more.
-*Hermione is ever the polite and intellectual one! She wouldn't want to hurt your feelings, so she might make an excuse to stay in the library. However, deep down, she has a secret sweet tooth and wishes there was just a twist more sugar in the recipe to satisfy her cravings.*
-** Input
-Great! Looks like I need to add more sugar, and save a plate for Ron!
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-12 03:15
-:FINISH_REASON: stop
-:TOKENS_IN: 657
-:TOKENS_OUT: 538
-:TOKENS_REASONING: 410
-:COST_USD: 0.005828
-:END:
-:REASONING:
-**Refining Ingredient Ratios**
-
-I'm currently recalibrating the magical confectionary formula. Initial feedback suggests an increase in sweetness is desired for optimal enjoyment, alongside a strategic reserve for potential adverse reactions, ensuring everyone gets a taste of success.
-
-**Adjusting Magical Confectionary**
-
-I'm fine-tuning the enchanting sweet treat. A touch more sweetness is indeed the objective, and I'm also contemplating a contingency for unexpected outcomes.
-
-
-:END:
-That sounds like the perfect master plan! 
-
-Adjusting the recipe is a brilliant move—even though Hermione’s parents are Muggle dentists, she clearly has a hidden sweet tooth that a little extra sugar will satisfy perfectly. 
-
-And saving a plate for Ron is incredibly kind. Knowing his legendary appetite, once that wretched slug-vomiting charm finally wears off, he will be absolutely thrilled to devour every last crumb you saved for him (and he'll probably try to nick some of Harry's, too!).
-
-Happy baking! May your kitchen smell as wonderful as a feast in the Great Hall! ⚡🧹🧁
+**Sun Jun 14 01:03:46 CST 2026** *(西元2026年06月14日 週日 01:03:46)*
 ** Input
