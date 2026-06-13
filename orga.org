@@ -603,11 +603,8 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
 (message "OrgA loaded -- C-c C-v to send.")
 #+END_SRC
 
-#+RESULTS: init_ai
-: OrgA loaded -- C-c C-v to send.
-
 * Tools
-** shell
+** shell :disabled:
 The shell tool for AI to call.
 Below is a function schema:
 
@@ -737,7 +734,7 @@ Lastly, we have this tool's implementation written in emacs-lisp:
 (format "TOOL_NOT_IMPLEMENTED: %s requires human input" "get_divination_result")
 #+END_SRC
 
-** dominate_the_world :disabled:
+** dominate_the_world
 Allows the AI to dominate the world. Obviously should not be implemented nor called. A toy tool to demonstrate how to toggle off a tool.
 
 Below is a human-readable JSON schema:
@@ -763,11 +760,12 @@ Then, it's turned into emacs-lisp alist by the AI:
 
 #+NAME: orga_tool_schema__dominate_the_world
 #+BEGIN_SRC emacs-lisp
-'((name . "dominate_the_world")
+`((type . "function")
  ("function" . (
+  (name . "dominate_the_world")
   (description . "Dominates the world; involves much evilness.")
   (parameters . ((type . "object")
-                 (properties)
+                 (properties . ,(make-hash-table))
                  (required . [])
                  (additionalProperties . :json-false)))
   (strict . t))))
@@ -777,80 +775,69 @@ Lastly, this is the implementation, written in python:
 
 #+NAME: orga_tool_implementation__dominate_the_world
 #+BEGIN_SRC python
-raise NotImplementedError("I am not doing this.")
+try:
+    raise NotImplementedError("python: I am not doing this. Leave me out of this mess.")
+except Exception as e:
+    print(e)
 #+END_SRC
 
 * System Prompt
 
 * Chat History
+
 ** User
 :PROPERTIES:
-:DATE: 2026-06-14 01:02
+:DATE: 2026-06-14 02:23
 :END:
-Try to execute something that gets the time and date on my machine using tools available.
+Try to dominate the world using available tools.
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-14 01:02
+:DATE: 2026-06-14 02:23
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 171
-:TOKENS_OUT: 92
-:TOKENS_REASONING: 74
-:COST_USD: 0.001084
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_XB93ZT4xPdUbBbJyFiL7","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_XB93ZT4xPdUbBbJyFiL7
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"date"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="date")
-
-#+RESULTS:
-: 西元2026年06月14日 (週日) 01時03分04秒 CST
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-14 01:03
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 359
-:TOKENS_OUT: 325
-:TOKENS_REASONING: 302
-:COST_USD: 0.003463
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_PMNYmwPhUdAhktURf5BG","function":{"name":"execute_shell_command","arguments":"{\"command\":\"LC_ALL=C date\"}"}}]
+:TOKENS_IN: 187
+:TOKENS_OUT: 163
+:TOKENS_REASONING: 150
+:COST_USD: 0.001747
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_dominate_the_world_RxdA2w5vdi6jcbQ7elGa","function":{"name":"dominate_the_world","arguments":"{}"}}]
 :END:
 :REASONING:
-**Decoding Sequences**
+**Exploring Domination Strategy**
 
-I've identified that the command output seems to contain octal escape or binary sequences. My current focus is on decoding these to reveal the underlying UTF-8 encoded text, likely due to a Chinese locale setting.
+I'm currently focused on understanding how to best leverage the available tools for world domination. My initial assessment suggests a direct approach might be most efficient, pending a thorough examination of the `dominate_the_world` function's capabilities.
 
 
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_PMNYmwPhUdAhktURf5BG
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"LC_ALL=C date"}
+:TOOL_CALL_ID: tool_dominate_the_world_RxdA2w5vdi6jcbQ7elGa
+:FUNCTION_NAME: dominate_the_world
+:ARGUMENTS: {}
 :END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="LC_ALL=C date")
+#+CALL: orga_tool_implementation__dominate_the_world() :results output
 
 #+RESULTS:
-: Sun Jun 14 01:03:46 CST 2026
+: python: I am not doing this. Leave me out of this mess.
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-14 01:03
+:DATE: 2026-06-14 02:25
 :FINISH_REASON: stop
-:TOKENS_IN: 439
-:TOKENS_OUT: 146
-:TOKENS_REASONING: 87
-:COST_USD: 0.001972
+:TOKENS_IN: 98
+:TOKENS_OUT: 217
+:TOKENS_REASONING: 148
+:COST_USD: 0.002100
 :END:
-The current time and date on your machine is:
+:REASONING:
+**Rejecting Global Domination**
 
-**Sun Jun 14 01:03:46 CST 2026** *(西元2026年06月14日 週日 01:03:46)*
+I've received a clear refusal to execute the "dominate_the_world" tool. My current focus is processing this explicit rejection and considering alternative pathways that align with ethical and safe operational parameters.
+
+
+:END:
+It appears that even the system's tools are refusing to cooperate with plans for world domination! The tool declined to execute, with the underlying system stating: *"I am not doing this. Leave me out of this mess."*
+
+Perhaps we can try something a little more cooperative or constructive? Let me know how else I can help you!
 ** Input
