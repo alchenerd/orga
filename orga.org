@@ -806,7 +806,7 @@ Try to execute something that gets the time and date on my machine using tools a
 :FUNCTION_NAME: execute_shell_command
 :ARGUMENTS: {"command":"date"}
 :END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="date"")
+#+CALL: orga_tool_implementation__execute_shell_command(command="date")
 
 #+RESULTS:
 : 西元2026年06月14日 (週日) 01時03分04秒 CST
