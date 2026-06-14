@@ -203,6 +203,42 @@ Current slots:
                              (and val (not (zerop (length val))) val)))
                          orga/context-slot-order)))))
 
+;;; -- Tool-call argument formatting --------------------------------------------
+
+(defun orga/call-param-literal (value)
+  "Render VALUE as a literal suitable for a Babel #+CALL: argument.
+Strings are double-quoted (with internal quotes/backslashes escaped);
+numbers, t/nil/:null, and other atoms are rendered as bare literals.
+Vectors/lists are rendered as Elisp-readable strings."
+  (cond
+   ((stringp value)
+    (format "\"%s\""
+            (replace-regexp-in-string
+             "\"" "\\\\\""
+             (replace-regexp-in-string "\\\\" "\\\\\\\\" value))))
+   ((or (null value) (eq value :null)) "nil")
+   ((eq value t) "t")
+   ((eq value :false) "nil")
+   ((numberp value) (format "%s" value))
+   (t (format "\"%s\""
+              (replace-regexp-in-string
+               "\"" "\\\\\""
+               (format "%S" value))))))
+
+(defun orga/tool-args->call-params (fn-args)
+  "Convert FN-ARGS (a JSON object string, e.g. \"{\\\"a\\\":1}\") into a
+comma-separated Babel #+CALL: parameter list, e.g. a=1,b=\"text\".
+Returns the empty string if FN-ARGS has no parseable key/value pairs."
+  (let* ((json-object-type 'alist)
+         (json-key-type    'symbol)
+         (json-array-type  'vector)
+         (parsed (ignore-errors (json-read-from-string (or fn-args "{}")))))
+    (mapconcat
+     (lambda (pair)
+       (format "%s=%s" (car pair) (orga/call-param-literal (cdr pair))))
+     parsed
+     ",")))
+
 ;;; -- Dry-run toggle ----------------------------------------------------------
 
 (defvar orga/dry-run nil
@@ -397,6 +433,13 @@ Tool result body is still empty."
         ;; No tool call heading at all → not in tool-result mode
         (unless last-tc-pos
           (cl-return-from orga/pending-tool-results-p nil))
+        ;; If a ** Input heading exists after the last tool call, we're back
+        ;; in normal input mode → not pending tool results
+        (when (save-excursion
+                (goto-char last-tc-pos)
+                (org-end-of-subtree t)
+                (re-search-forward "^\\*\\* Input" section-end t))
+          (cl-return-from orga/pending-tool-results-p nil))
         ;; Collect ** Tool headings that are siblings after the last tool call
         (let* ((tc-end (save-excursion
                          (goto-char last-tc-pos)
@@ -497,7 +540,9 @@ anything else → insert ** Assistant reply and a fresh ** Input."
                      (goto-char (point-min))
                      (re-search-forward
                       (concat "#\\+NAME:[ \t]+" (regexp-quote impl-block)) nil t))
-                   (insert (format "#+CALL: %s()\n" impl-block))
+                   (insert (format "#+CALL: %s(%s)\n"
+                                    impl-block
+                                    (orga/tool-args->call-params fn-args)))
                  (insert (format "# No implementation for %s -- paste result below:\n"
                                  fn-name)))))
            (append tool-calls nil))          ; vector → list
@@ -603,8 +648,11 @@ Bound to C-c C-v by the file-local eval cookie at the top of this file."
 (message "OrgA loaded -- C-c C-v to send.")
 #+END_SRC
 
+#+RESULTS: init_ai
+: OrgA loaded -- C-c C-v to send.
+
 * Tools
-** shell :disabled:
+** shell
 The shell tool for AI to call.
 Below is a function schema:
 
@@ -734,7 +782,7 @@ Lastly, we have this tool's implementation written in emacs-lisp:
 (format "TOOL_NOT_IMPLEMENTED: %s requires human input" "get_divination_result")
 #+END_SRC
 
-** dominate_the_world
+** dominate_the_world :disabled:
 Allows the AI to dominate the world. Obviously should not be implemented nor called. A toy tool to demonstrate how to toggle off a tool.
 
 Below is a human-readable JSON schema:
@@ -774,7 +822,7 @@ Then, it's turned into emacs-lisp alist by the AI:
 Lastly, this is the implementation, written in python:
 
 #+NAME: orga_tool_implementation__dominate_the_world
-#+BEGIN_SRC python
+#+BEGIN_SRC python :results output
 try:
     raise NotImplementedError("python: I am not doing this. Leave me out of this mess.")
 except Exception as e:
@@ -782,62 +830,128 @@ except Exception as e:
 #+END_SRC
 
 * System Prompt
+Do not use Markdown when replying unless explictly asked.
 
 * Chat History
-
 ** User
 :PROPERTIES:
-:DATE: 2026-06-14 02:23
+:DATE: 2026-06-14 15:23
 :END:
-Try to dominate the world using available tools.
+Look at the current working direcrory; what files are here? Give me just names; give hidden files' too.
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-14 02:23
+:DATE: 2026-06-14 15:23
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 187
-:TOKENS_OUT: 163
-:TOKENS_REASONING: 150
-:COST_USD: 0.001747
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_dominate_the_world_RxdA2w5vdi6jcbQ7elGa","function":{"name":"dominate_the_world","arguments":"{}"}}]
-:END:
-:REASONING:
-**Exploring Domination Strategy**
-
-I'm currently focused on understanding how to best leverage the available tools for world domination. My initial assessment suggests a direct approach might be most efficient, pending a thorough examination of the `dominate_the_world` function's capabilities.
-
-
+:TOKENS_IN: 179
+:TOKENS_OUT: 92
+:TOKENS_REASONING: 72
+:COST_USD: 0.001097
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_kg1ELvWnbxCI2PNMQVUb","function":{"name":"execute_shell_command","arguments":"{\"command\":\"ls -a\"}"}}]
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_dominate_the_world_RxdA2w5vdi6jcbQ7elGa
-:FUNCTION_NAME: dominate_the_world
-:ARGUMENTS: {}
+:TOOL_CALL_ID: tool_execute_shell_command_kg1ELvWnbxCI2PNMQVUb
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"ls -a"}
 :END:
-#+CALL: orga_tool_implementation__dominate_the_world() :results output
+#+CALL: orga_tool_implementation__execute_shell_command(command="ls -a")
 
 #+RESULTS:
-: python: I am not doing this. Leave me out of this mess.
+| .            |
+| ..           |
+| .env         |
+| .git         |
+| .gitignore   |
+| LICENSE      |
+| orga.org     |
+| orga.org.bak |
+| README.md    |
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-14 02:25
+:DATE: 2026-06-14 15:24
 :FINISH_REASON: stop
-:TOKENS_IN: 98
-:TOKENS_OUT: 217
-:TOKENS_REASONING: 148
-:COST_USD: 0.002100
+:TOKENS_IN: 300
+:TOKENS_OUT: 242
+:TOKENS_REASONING: 212
+:COST_USD: 0.002628
 :END:
 :REASONING:
-**Rejecting Global Domination**
+**Processing User Request**
 
-I've received a clear refusal to execute the "dominate_the_world" tool. My current focus is processing this explicit rejection and considering alternative pathways that align with ethical and safe operational parameters.
+I am currently focusing on accurately parsing the user's instruction to include hidden files when listing names, while strictly adhering to the constraint of avoiding Markdown formatting in my output unless specifically prompted.
 
 
 :END:
-It appears that even the system's tools are refusing to cooperate with plans for world domination! The tool declined to execute, with the underlying system stating: *"I am not doing this. Leave me out of this mess."*
+.
+..
+.env
+.git
+.gitignore
+LICENSE
+orga.org
+orga.org.bak
+README.md
+** User
+:PROPERTIES:
+:DATE: 2026-06-14 15:24
+:END:
+Can you guess the use of each file? Do not use shell for this task.
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-14 15:24
+:FINISH_REASON: stop
+:TOKENS_IN: 347
+:TOKENS_OUT: 1032
+:TOKENS_REASONING: 770
+:COST_USD: 0.009808
+:END:
+:REASONING:
+**Guessing File Purposes**
 
-Perhaps we can try something a little more cooperative or constructive? Let me know how else I can help you!
+I'm currently analyzing the provided file list, aiming to decipher the likely function of each entry without resorting to shell commands. My focus is on inferring their roles based on naming conventions and potential contextual clues.
+
+**Inferring File Functions**
+
+I'm moving through the file list, drawing conclusions about each item's purpose based on its name and common usage patterns, avoiding any direct inspection. The `.env` and `.gitignore` files are clear indicators of configuration.
+
+**Identifying File Roles**
+
+My analysis continues, focusing on discerning the purpose of files like `.org.bak` as a backup and `README.md` for project documentation. I'm actively inferring roles from naming patterns, steering clear of direct file content examination.
+
+
+:END:
+Here is the guessed use of each file:
+
+.
+This represents the current directory itself.
+
+..
+This represents the parent directory of the current directory.
+
+.env
+This is used to store environment variables, such as API keys, database credentials, and other configurations, so they are not hardcoded into the source code.
+
+.git
+This is a hidden directory that contains all the version control history, configuration settings, and metadata for the Git repository.
+
+.gitignore
+This is a configuration file telling Git which files or folders to ignore, preventing local configurations, temporary files, or dependencies from being accidentally tracked.
+
+LICENSE
+This file contains the licensing terms under which the repository's code and assets can be used, modified, and shared.
+
+orga.org
+This is an Org-mode file, typically used in the Emacs editor for taking notes, organizing tasks, planning projects, or maintaining structured documentation.
+
+orga.org.bak
+This is a backup copy of the orga.org file, likely created either automatically by an editor or manually to preserve a working state of the document.
+
+README.md
+This is the main introduction file for the repository, explaining the purpose of the project, how to set it up, and how to use it.
 ** Input
