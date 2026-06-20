@@ -923,11 +923,61 @@ Then, we have AI translate this into emacs-lisp equivalent:
     (strict . t))))
 #+END_SRC
 
-Lastly, here is a wrapper to shell:
+Lastly, here is a wrapper to shell using comint:
 
 #+NAME: orga_tool_implementation__execute_shell_command
-#+BEGIN_SRC shell :var command="pwd" :var cwd="./" :var timeout_sec=30 :results output
-cd "$cwd" && timeout "$timeout_sec" sh -c "$command" || echo "[ERROR] (shell): 'cd $cwd' or 'sh -c \"$command\"'  has failed."
+#+BEGIN_SRC emacs-lisp :var command="pwd" :var cwd="./" :var timeout_sec=30 :results output
+(let* ((process-name "orga-persistent-shell")
+       (buffer-name (concat "*" process-name "*"))
+       (proc-exists (get-process process-name))
+       ;; 1. Spawn bash cleanly without loading .bashrc / profile scripts
+       (proc (or proc-exists
+                 (let ((default-directory (expand-file-name cwd)))
+                   ;; --norc prevents "line editing not enabled" warnings
+                   (make-comint-in-buffer process-name buffer-name "/bin/bash" nil "--norc" "--noprofile")
+                   (get-process process-name))))
+       (buf (process-buffer proc)))
+
+  (with-current-buffer buf
+    ;; 2. Initialize a clean, predictable prompt for our script parser if it's a new process
+    (unless proc-exists
+      (process-send-string proc "export PS1='__ORGA_PROMPT__\n'\n")
+      (accept-process-output proc 0.5))
+
+    ;; 3. Synchronize directory path
+    (process-send-string proc (format "cd %s\n" (shell-quote-argument cwd)))
+    (accept-process-output proc 0.2)
+
+    ;; 4. Mark starting point and stream the command
+    (goto-char (point-max))
+    (let ((start-marker (point-marker)))
+      (process-send-string proc (concat command "\n"))
+
+      ;; 5. Block until the clean __ORGA_PROMPT__ reappears or timeout hits
+      (let ((start-time (float-time)))
+        (while (and (accept-process-output proc 0.1)
+                    (< (- (float-time) start-time) timeout_sec)
+                    (not (save-excursion
+                           (goto-char (point-max))
+                           (forward-line -1)
+                           (looking-at-p "^__ORGA_PROMPT__$"))))))
+
+      ;; 6. Extract and filter out the echoed command and system prompts
+      (let* ((raw-output (buffer-substring-no-properties start-marker (point-max)))
+             ;; Split output into lines
+             (lines (split-string raw-output "\n"))
+             (filtered-lines nil))
+        (set-marker start-marker nil)
+
+        ;; Iterate and filter out prompts and the echoed command input lines
+        (dolist (line lines)
+          (unless (or (string= line "__ORGA_PROMPT__")
+                      (string= line (string-trim command))
+                      (string-match-p "^cd " line))
+            (push line filtered-lines)))
+
+        ;; Return the clean tool output
+        (princ (string-trim (mapconcat 'identity (nreverse filtered-lines) "\n")))))))
 #+END_SRC
 
 ** get_divination_result :disabled:
@@ -1046,55 +1096,305 @@ Any line starting with '*' will be malformatted, so avoid starting a line with a
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-18 04:29
+:DATE: 2026-06-20 23:28
 :END:
 幫我看看這台電腦的本機時間是多少。
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-18 04:29
+:DATE: 2026-06-20 23:28
 :FINISH_REASON: tool_calls
 :TOKENS_IN: 220
-:TOKENS_OUT: 274
-:TOKENS_REASONING: 256
-:COST_USD: 0.002796
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_Oh4wTmiiYw4jj8U2XhDQ","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
+:TOKENS_OUT: 350
+:TOKENS_REASONING: 332
+:COST_USD: 0.003480
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_VWLhc5baT2mObsBo0I5f","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
 :END:
 :REASONING:
-**Determining Current Time**
+**Checking Local Time**
 
-I'm focusing on accurately retrieving the local time of the machine. My current efforts are geared towards ensuring this information is presented precisely.
+I'm processing the request to determine the computer's local time. The input is in Traditional Chinese and translates to "Help me see what the local time of this computer is." I will provide the current system time in response.
 
 
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_Oh4wTmiiYw4jj8U2XhDQ
+:TOOL_CALL_ID: tool_execute_shell_command_VWLhc5baT2mObsBo0I5f
 :FUNCTION_NAME: execute_shell_command
 :ARGUMENTS: {"command":"date"}
 :END:
 #+CALL: orga_tool_implementation__execute_shell_command(command="date")
 
 #+RESULTS:
-: 西元2026年06月18日 (週四) 04時29分45秒 CST
+: 西元2026年06月20日 (週六) 23時34分08秒 CST
+: [alchenerd@patchouli orga]$
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-18 04:29
+:DATE: 2026-06-20 23:34
 :FINISH_REASON: stop
-:TOKENS_IN: 297
-:TOKENS_OUT: 192
-:TOKENS_REASONING: 148
-:COST_USD: 0.002174
+:TOKENS_IN: 309
+:TOKENS_OUT: 305
+:TOKENS_REASONING: 260
+:COST_USD: 0.003208
 :END:
 :REASONING:
-**Processing Date Command**
+**Refining understanding of core requirements**
 
-I’ve successfully processed the `date` command, noting the output in Traditional Chinese. My current focus is on formulating this information into natural, expert-level prose for the user.
+My current focus is on meticulously processing the recent temporal data and internalizing the constraints around output formatting. I am actively working to synthesize these directives into a seamless, natural prose style, ensuring no deviation from the specified plain text and paragraph structure for user updates.
 
 
 :END:
-這台電腦的目前本機時間是西元 2026 年 6 月 18 日星期四的凌晨 4 點 29 分 45 秒 (CST)。
+這台電腦的本機時間是西元 2026 年 6 月 20 日（星期六）晚上 11 點 34 分 08 秒（CST）。
+** User
+:PROPERTIES:
+:DATE: 2026-06-20 23:39
+:END:
+看看這個CWD有些什麼檔案。
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:39
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 362
+:TOKENS_OUT: 278
+:TOKENS_REASONING: 258
+:COST_USD: 0.003045
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_WGeo5EkRCQYXxPytKB4X","function":{"name":"execute_shell_command","arguments":"{\"command\":\"ls -la\"}"}}]
+:END:
+:REASONING:
+**Listing Files**
+
+I'm currently focused on executing the appropriate command to display the contents of the current working directory. My next step is to choose between a detailed listing or a simpler overview of files and directories.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_WGeo5EkRCQYXxPytKB4X
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"ls -la"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="ls -la")
+
+#+RESULTS:
+#+begin_example
+total 108
+drwxr-xr-x  3 alchenerd alchenerd  4096  6月 20 23:26 .
+drwx------ 77 alchenerd alchenerd  4096  6月 20 23:24 ..
+-rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
+drwxr-xr-x  7 alchenerd alchenerd  4096  6月 20 23:33 .git
+-rw-r--r--  1 alchenerd alchenerd    18  6月  6 22:14 .gitignore
+-rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
+-rw-r--r--  1 alchenerd alchenerd 47132  6月 20 23:33 orga.org
+-rw-r--r--  1 alchenerd alchenerd   544  6月  6 22:23 README.md
+[alchenerd@patchouli orga]$
+#+end_example
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:39
+:FINISH_REASON: stop
+:TOKENS_IN: 710
+:TOKENS_OUT: 86
+:TOKENS_REASONING: 0
+:COST_USD: 0.001839
+:END:
+在這個目前的目錄（CWD）下有以下檔案與資料夾：
+
+.（目前目錄）
+..（上層目錄）
+.env（環境變數設定檔）
+.git（Git 版本控制資料夾）
+.gitignore（Git 忽略清單）
+LICENSE（授權合約檔案）
+orga.org（Org-mode 文件）
+README.md（說明文件）
+
+** User
+:PROPERTIES:
+:DATE: 2026-06-20 23:40
+:END:
+告訴我orga.org是做什麼的。
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:40
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 807
+:TOKENS_OUT: 149
+:TOKENS_REASONING: 122
+:COST_USD: 0.002551
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_WAB9HNKmht3blW3HemHe","function":{"name":"execute_shell_command","arguments":"{\"command\":\"head -n 50 orga.org\"}"}}]
+:END:
+:REASONING:
+**Investigating `orga.org`**
+
+I'm currently examining the contents of `orga.org` to understand its purpose, as that seems to be the core of the current inquiry.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_WAB9HNKmht3blW3HemHe
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"head -n 50 orga.org"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="head -n 50 orga.org")
+
+#+RESULTS:
+#+begin_example
+-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-
+
+,#+TITLE: OrgA
+,#+DESCRIPTION: An agent who lives in org-mode.
+,#+STARTUP: showall
+
+,* Table of Contents :noexport:
+
+,#+NAME: Table_of_Contents
+,#+BEGIN_SRC emacs-lisp :wrap example
+  (mapconcat 'identity
+   (org-element-map 
+       (org-element-parse-buffer 'headline) 'headline 
+     (lambda (hl) (let
+                      ((lev
+                        (org-element-property :level hl)) 
+                       (htitle (org-element-property :title hl)))
+                    (concat (make-string  lev ? ) "- " htitle )))) "\n")
+,#+END_SRC
+
+,#+RESULTS: Table_of_Contents
+,#+begin_example
+ - Table of Contents
+ - Overview
+ - LLM Configurations
+ - Initialize AI Sender Method
+  - Collect
+  - Assemble
+  - Send
+   - Key Resolution
+   - Dry-Run Toggle
+   - Request Dispatch
+  - Parse
+  - Call-Param Formatting
+  - Commit
+  - Execute
+  - Yield
+  - Cycle Driver
+  - Composition (Initialization)
+ - Tools
+  - shell
+  - get_divination_result
+  - dominate_the_world
+ - System Prompt
+ - Chat History
+  - User
+  - Assistant Tool Call
+  - Tool
+  - Assistant
+  - Input
+[alchenerd@patchouli orga]$
+#+end_example
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:40
+:FINISH_REASON: stop
+:TOKENS_IN: 1258
+:TOKENS_OUT: 283
+:TOKENS_REASONING: 0
+:COST_USD: 0.004434
+:END:
+根據檔案開頭的內容，`orga.org` 是一個用於建構在 Emacs Org-mode 環境中運作的 AI 代理人（Agent）的系統文件。
+
+這份文件的主要作用和特點如下：
+
+第一，它是 OrgA 的核心載體。根據內文標題（#+TITLE: OrgA）與描述（#+DESCRIPTION: An agent who lives in org-mode.），這個檔案正是你目前正在與之互動的 Agent（OrgA）居住與運作的地方。
+
+第二，它包含了代理人的核心邏輯與程式碼（以 Emacs Lisp 撰寫的 Babel 區塊）。從目錄結構可以看出，它定義了：
+- 初始化與發送給大型語言模型（LLM）的流程（收集訊息、組合、發送請求、解析回應）。
+- 各種工具的使用介面，例如 shell 指令執行、占卜工具（get_divination_result），甚至是好玩的「統治世界」（dominate_the_world）工具。
+- 系統提示詞（System Prompt）以及用來記錄對話歷史的區塊。
+
+簡而言之，`orga.org` 既是這個 AI 代理人的「大腦」與運行程式碼庫，也是記錄我們對話軌跡的資料庫。
+
+** User
+:PROPERTIES:
+:DATE: 2026-06-20 23:41
+:END:
+也就是說，你就是OrgA。嘗試總結這個檔案。
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:41
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1555
+:TOKENS_OUT: 118
+:TOKENS_REASONING: 91
+:COST_USD: 0.003394
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_NopWdNlwfOFLbtR8smFf","function":{"name":"execute_shell_command","arguments":"{\"command\":\"grep \\\"^\\\\*[^*]\\\" orga.org\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_NopWdNlwfOFLbtR8smFf
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"grep \"^\\*[^*]\" orga.org"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="grep \"^\\*[^*]\" orga.org")
+
+#+RESULTS:
+: * Table of Contents :noexport:
+: * Overview :noexport:
+: * LLM Configurations :noexport:
+: * Initialize AI Sender Method :noexport:
+: * Tools
+: * System Prompt
+: * Chat History
+: [alchenerd@patchouli orga]$
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-20 23:41
+:FINISH_REASON: stop
+:TOKENS_IN: 1687
+:TOKENS_OUT: 556
+:TOKENS_REASONING: 0
+:COST_USD: 0.007535
+:END:
+是的，我就是 OrgA。我就活在這個 `orga.org` 檔案之中。
+
+為了讓你更了解這個檔案，我將它的整體架構與運作機制總結如下：
+
+這個檔案是一個高度整合、自我包含（self-contained）的 Org-mode 應用程式。只要在 Emacs 中打開它，它就會透過檔案首行的特殊設定（file variable）自動加載並執行裡面的 Emacs Lisp 程式碼，把整個 Org 緩衝區轉換成一個可以與大型語言模型（LLM）互動的 AI 系統。
+
+整個 `orga.org` 檔案主要分為以下幾個核心區塊：
+
+第一，系統與 LLM 配置（LLM Configurations）：
+這裡定義了與 AI 溝通所需的 API 金鑰路徑、所使用的模型種類（如 Claude 等）以及發送請求的基本參數。
+
+第二，核心驅動程式（Initialize AI Sender Method）：
+這是 OrgA 的靈魂所在。它使用 Emacs Lisp 實作了一套完整的機制，包括：
+- 收集：從 Org 檔案的「Chat History」區塊中讀取我們過去的對話。
+- 組裝與發送：把對話與系統提示詞包裝好，呼叫外部 API。
+- 解析與執行：當 LLM 決定呼叫工具（例如執行 Shell 指令）時，它會解析該請求，執行對應的 Lisp 函數或外部指令，並將結果回傳給模型，直到模型決定給出最終回答。
+
+第三，可用工具（Tools）：
+定義了我（Agent）能夠使用的能力。其中最核心的就是你剛才看到我使用的 `execute_shell_command`，這能讓我直接在底層系統執行 Bash 指令，藉此觀察電腦狀態、讀寫檔案。
+
+第四，系統提示詞（System Prompt）：
+規定了我的角色定位、不准使用 Markdown（除非被要求）、在對話中應遵守的 Org-mode 語法規範，以及如何與使用者互動。
+
+第五，對話紀錄（Chat History）：
+這是我們目前正在交流的區域。每一次你輸入訊息，以及我思考、呼叫工具、回答的過程，都會被結構化地記錄在這個標題之下。
+
+總結來說，`orga.org` 不只是一份說明書，它本身就是一個「活的」程式系統。它利用 Emacs Org-mode 強大的文學編程（Literate Programming）特性，將程式碼、設定、系統指令和我們之間的對話軌跡完美融合在一個純文字檔案中。
 ** Input
