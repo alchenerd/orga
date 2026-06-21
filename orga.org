@@ -820,9 +820,13 @@ file runs the same splice-and-load sequence orga.org's cookie ran for
 #+NAME: orga__keybindings
 #+BEGIN_SRC emacs-lisp
 (progn
-  (define-key org-babel-map "S" #'ai-chat-cycle)
-  (define-key org-babel-map "D" #'orga/toggle-dry-run)
-  (define-key org-babel-map "E" #'orga/execute-all-calls)
+  (define-key org-babel-map (kbd "S") #'ai-chat-cycle)
+  (define-key org-babel-map (kbd "D") #'orga/toggle-dry-run)
+  (define-key org-babel-map (kbd "E") #'orga/execute-all-calls)
+  ;;; For my convenience
+  (global-set-key (kbd "<f9>") (lambda () (interactive) (save-buffer) (ai-chat-cycle)))
+  (global-set-key (kbd "<f8>") #'orga/toggle-dry-run)
+  (global-set-key (kbd "<f7>") #'orga/execute-all-calls)
 )
 #+END_SRC
 
