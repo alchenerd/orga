@@ -691,10 +691,6 @@ parse -> commit -> execute -> yield in order. Doesn't belong to any
 single stage, so it stays its own block, defined last since it's the
 only thing that calls all the others.
 
-Migrates from orga.org:
-- =orga/pending-tool-results-p= (L412-462)
-- =ai-chat-cycle= (L588-646), top-level =cond=
-
 #+NAME: orga_core__cycle-driver
 #+BEGIN_SRC emacs-lisp :noweb yes
 (defun orga/pending-tool-results-p ()
@@ -999,6 +995,113 @@ Lastly, here is a wrapper to shell using comint:
               (princ body))))))))
 #+END_SRC
 
+** web_search
+Search the web using DuckDuckGo.
+Scraping HTML endpoint, be respectful or else risk getting rate-limited.
+
+First, the human-readable JSON schema:
+
+#+BEGIN_SRC json
+{
+  "type": "function",
+  "function": {
+    "name": "web_search",
+    "description": "Search the web and return a list of results (title, URL, snippet). Use this to look up current information, documentation, or facts beyond the model's knowledge.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query."
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum number of results to return. Defaults to 5.",
+          "default": 5
+        }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    },
+    "strict": true
+  }
+}
+#+END_SRC
+
+Second, the emacs-lisp schema alist, named orga_tool_schema__web_search:
+
+#+NAME: orga_tool_schema__web_search
+#+BEGIN_SRC emacs-lisp
+'((type . "function")
+  (function . (
+    (name . "web_search")
+    (description . "Search the web and return a list of results (title, URL, snippet). Use this to look up current information, documentation, or facts beyond the model's knowledge.")
+    (parameters . (
+      (type . "object")
+      (properties . (
+        (query . (
+          (type . "string")
+          (description . "The search query.")))
+        (max_results . (
+          (type . "integer")
+          (description . "Maximum number of results to return. Defaults to 5.")
+          (default . 5)))))
+      (required . ["query"])
+      (additionalProperties . :json-false)))
+    (strict . t))))
+#+END_SRC
+
+Third, the implementation, named orga_tool_implementation__web_search. Note the babel header matches your shell tool's style, taking vars and producing output:
+
+#+NAME: orga_tool_implementation__web_search
+#+BEGIN_SRC emacs-lisp :var query="org mode" :var max_results=5 :results output
+(require 'url-util)
+(cl-flet*
+    ((url-decode (str) (decode-coding-string (url-unhex-string str) 'utf-8))
+     (unwrap (href) (if (string-match "[?&]uddg=\\([^&]+\\)" href)
+                        (url-decode (match-string 1 href)) href))
+     (strip (h) (let ((s (replace-regexp-in-string "<[^>]+>" "" h)))
+                  (dolist (p '(("&amp;" . "&") ("&lt;" . "<") ("&gt;" . ">")
+                               ("&quot;" . "\"") ("&#x27;" . "'")
+                               ("&#39;" . "'") ("&nbsp;" . " ")))
+                    (setq s (replace-regexp-in-string (car p) (cdr p) s t t)))
+                  (string-trim s))))
+  (let* ((exit nil)
+         (page (with-output-to-string
+                 (with-current-buffer standard-output
+                   (setq exit (call-process
+                               "curl" nil t nil
+                               "-s" "--max-time" "20"
+                               "-A" "Mozilla/5.0 (X11; Linux x86_64)"
+                               "--data-urlencode" (concat "q=" query)
+                               "https://html.duckduckgo.com/html/")))))
+         (results '()) (pos 0) (snips '()) (sp 0))
+    (if (not (eq exit 0))
+        (princ (format "SEARCH_ERROR: curl exited with %s" exit))
+      (while (and (string-match
+                   "class=\"result__a\"[^>]*href=\"\\([^\"]+\\)\"[^>]*>\\(\\(?:.\\|\n\\)*?\\)</a>"
+                   page pos)
+                  (< (length results) max_results))
+        (push (list (unwrap (match-string 1 page)) (strip (match-string 2 page)))
+              results)
+        (setq pos (match-end 0)))
+      (setq results (nreverse results))
+      (while (string-match
+              "class=\"result__snippet\"[^>]*>\\(\\(?:.\\|\n\\)*?\\)</a>" page sp)
+        (push (strip (match-string 1 page)) snips)
+        (setq sp (match-end 0)))
+      (setq snips (nreverse snips))
+      (if (null results)
+          (princ "NO_RESULTS")
+        (let ((i 0))
+          (dolist (r results)
+            (princ (format "%d. %s\n   %s\n   %s\n\n"
+                           (1+ i) (nth 1 r) (nth 0 r)
+                           (let ((sn (nth i snips)))
+                             (if sn (truncate-string-to-width sn 200) ""))))
+            (setq i (1+ i))))))))
+#+END_SRC
+
 ** get_divination_result :disabled:
 Gets a divination result. Secretly done by the human user. Human user manually handles the tool response.
 
@@ -1115,675 +1218,66 @@ Any line starting with '*' will be malformatted, so avoid starting a line with a
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-21 05:51
+:DATE: 2026-06-21 22:08
 :END:
-Look around with the shell tool. What do you see?
+The search tool is available. Test it out with query="matcha".
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: anthropic/claude-opus-4.8
 :PROVIDER: Anthropic
-:DATE: 2026-06-21 05:51
+:DATE: 2026-06-21 22:08
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 701
-:TOKENS_OUT: 123
-:TOKENS_REASONING: 12
-:COST_USD: 0.006580
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"toolu_01Psc8fvPEZ2V7ZtL8AnHZY3","function":{"name":"execute_shell_command","arguments":"{\"command\": \"pwd && echo \\\"---\\\" && ls -la && echo \\\"--- whoami ---\\\" && whoami && echo \\\"--- system ---\\\" && uname -a\"}"}}]
-:END:
-:REASONING:
-I'm taking a moment to observe what's around me.
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: toolu_01Psc8fvPEZ2V7ZtL8AnHZY3
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command": "pwd && echo \"---\" && ls -la && echo \"--- whoami ---\" && whoami && echo \"--- system ---\" && uname -a"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="pwd && echo \"---\" && ls -la && echo \"--- whoami ---\" && whoami && echo \"--- system ---\" && uname -a")
-
-#+RESULTS:
-#+begin_example
-/home/alchenerd/orga
----
-total 108
-drwxr-xr-x  3 alchenerd alchenerd  4096  6月 21 05:31 .
-drwx------ 77 alchenerd alchenerd  4096  6月 21 05:51 ..
--rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
-drwxr-xr-x  7 alchenerd alchenerd  4096  6月 21 05:51 .git
--rw-r--r--  1 alchenerd alchenerd    18  6月  6 22:14 .gitignore
--rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
--rw-r--r--  1 alchenerd alchenerd 46265  6月 21 05:51 orga.org
--rw-r--r--  1 alchenerd alchenerd   544  6月  6 22:23 README.md
---- whoami ---
-alchenerd
---- system ---
-Linux patchouli 7.0.10-1-MANJARO #1 SMP PREEMPT_DYNAMIC Sun, 24 May 2026 04:47:00 +0000 x86_64 GNU/Linux
-#+end_example
-** Assistant
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 05:52
-:FINISH_REASON: stop
-:TOKENS_IN: 1315
-:TOKENS_OUT: 343
-:TOKENS_REASONING: 9
-:COST_USD: 0.015150
-:END:
-:REASONING:
-Looking at what's presented here.
-:END:
-Here's what I found looking around.
-
-I'm in the directory /home/alchenerd/orga, logged in as the user alchenerd on a machine named patchouli running Manjaro Linux (kernel 7.0.10, x86_64). The current date appears to be around June 21st.
-
-The directory itself looks like a git repository for a project called "orga." Inside it there are a handful of files: a README.md, a LICENSE file (a large one, around 35 KB, so probably GPL or similar), a .gitignore, and a hidden .env file that likely holds configuration or secrets. There's also a .git folder confirming version control is active.
-
-The centerpiece is orga.org, a fairly substantial org-mode file at about 46 KB, which was modified most recently. Given that I live inside an org-mode file myself, that's almost certainly the very document we're working in right now.
-
-Would you like me to peek inside any of these, such as the README to understand the project, or the org file to see its structure? I'll steer clear of the .env unless you want me to inspect it.
-
-** User
-:PROPERTIES:
-:DATE: 2026-06-21 05:54
-:END:
-I have copied orga.org to orga.org.bak so our chat and tool calls won't interfere with your viewing. Look inside orga.org.bak and tell me what you see and what you think.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 05:54
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 1708
-:TOKENS_OUT: 119
+:TOKENS_IN: 875
+:TOKENS_OUT: 64
 :TOKENS_REASONING: 0
-:COST_USD: 0.011515
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"toolu_01WENdtzyCmvfLvWa4R1D7gH","function":{"name":"execute_shell_command","arguments":"{\"command\": \"echo \\\"=== HEAD ===\\\" && head -100 orga.org.bak && echo \\\"\\\" && echo \\\"=== ORG STRUCTURE (headings) ===\\\" && grep -n '^\\\\*' orga.org.bak\"}"}}]
+:COST_USD: 0.005975
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"toolu_01KgmU4LCJSeCyCzCNFZDQfc","function":{"name":"web_search","arguments":"{\"query\": \"matcha\"}"}}]
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: toolu_01WENdtzyCmvfLvWa4R1D7gH
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command": "echo \"=== HEAD ===\" && head -100 orga.org.bak && echo \"\" && echo \"=== ORG STRUCTURE (headings) ===\" && grep -n '^\\*' orga.org.bak"}
+:TOOL_CALL_ID: toolu_01KgmU4LCJSeCyCzCNFZDQfc
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query": "matcha"}
 :END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="echo \"=== HEAD ===\" && head -100 orga.org.bak && echo \"\" && echo \"=== ORG STRUCTURE (headings) ===\" && grep -n '^\\*' orga.org.bak")
+#+CALL: orga_tool_implementation__web_search(query="matcha")
 
 #+RESULTS:
 #+begin_example
-=== HEAD ===
--*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-
+1. Matcha - Wikipedia
+   https://en.wikipedia.org/wiki/Matcha
+   Matcha[a] (/ ˈmætʃə, ˈmɑːtʃə / ⓘ; [2][3] Japanese: 抹茶) is a finely ground powder of green tea specially processed from shade-grown tea leaves. [4][5][6] Shade growing gives matcha its characteristic
 
-,#+TITLE: OrgA
-,#+DESCRIPTION: An agent who lives in org-mode.
-,#+STARTUP: showall
+2. What is Matcha and What Does It Taste Like? | How Matcha is Made, How ...
+   https://matcha.com/blogs/news/what-is-matcha
+   Matcha is a high-quality green tea that is finely grounded in powdered form. When prepared, matcha powder is whisked with hot water (instead of steeped in boiling water) to form a frothy, vibrant gree
 
-,* Table of Contents :noexport:
+3. 7 Proven Health Benefits of Matcha Tea
+   https://www.healthline.com/nutrition/7-benefits-of-matcha-tea
+   Matcha comes from the same plant as green tea, but it contains more antioxidants and caffeine. Here are 7 possible health benefits of matcha tea, backed by science.
 
-,#+NAME: Table_of_Contents
-,#+BEGIN_SRC emacs-lisp :wrap example
-  (mapconcat 'identity
-   (org-element-map
-       (org-element-parse-buffer 'headline) 'headline
-     (lambda (hl) (let
-                      ((lev
-                        (org-element-property :level hl))
-                       (htitle (org-element-property :title hl)))
-                    (concat (make-string  lev ? ) "- " htitle )))) "\n")
-,#+END_SRC
+4. What is matcha and is it healthy? - BBC Bitesize
+   https://www.bbc.co.uk/bitesize/articles/zdt8vj6
+   What is matcha? Does it contain caffeine? And how do you make a matcha latte? Find out all that and more matcha info with this article from BBC Bitesize.
 
-,#+RESULTS: Table_of_Contents
-,#+begin_example
- - Table of Contents
- - Overview
- - LLM Configurations
- - Initialize AI Sender Method
-  - Collect
-  - Assemble
-  - Send
-   - Key Resolution
-   - Dry-Run Toggle
-   - Request Dispatch
-  - Parse
-  - Call-Param Formatting
-  - Commit
-  - Execute
-  - Yield
-  - Cycle Driver
-  - Composition (Initialization)
- - Tools
-  - shell
-  - get_divination_result
-  - dominate_the_world
- - System Prompt
- - Chat History
-  - User
-  - Assistant Tool Call
-  - Tool
-  - Assistant
-  - Input
-,#+end_example
+5. Is matcha actually healthy? Here's what the science says - BBC
+   https://www.bbc.co.uk/food/articles/clyxegk1k7xo
+   Matcha is made from shade-grown green tea leaves that have been ground into a powder. This means it shares a lot of the properties of regular green tea. "Coffee and tea, including matcha, are both ...
 
-,* Overview :noexport:
-
-collect -> assemble -> send -> parse -> commit -> execute -> yield
-
-,* LLM Configurations :noexport:
-
-,#+NAME: openrouter_key
-,#+BEGIN_SRC text
-""
-,#+END_SRC
-
-,#+NAME: openrouter_model
-,#+BEGIN_SRC text
-"anthropic/claude-opus-4.8"
-,#+END_SRC
-
-,* Initialize AI Sender Method :noexport:
-
-,** Collect
-
-Collects raw inputs from the Org buffer and shape them into
-`(:role :content)` lists: chat history, system prompt.
-Also collects tool schemas.
-
-,#+NAME: orga_core__collect
-,#+BEGIN_SRC emacs-lisp
-(defun orga/subtree-body ()
-  "Return the message body of the subtree whose heading is at point.
-Skips the :PROPERTIES: drawer and strips any :REASONING:...:END: drawers
-so internal chain-of-thought never leaks back into the API context.
-Result is trimmed."
-  (save-excursion
-    (forward-line 1)
-    ;; Skip :PROPERTIES:...:END:
-    (when (looking-at "[ \t]*:PROPERTIES:")
-      (re-search-forward "^[ \t]*:END:" nil t)
-      (forward-line 1))
-    ;; Collect the raw subtree body
-    (let* ((beg (point))
-           (end (progn (org-end-of-subtree t) (point)))
-           (raw (buffer-substring-no-properties beg end)))
-      ;; Strip :REASONING:...:END: blocks (non-greedy, multiline)
-      (string-trim
-       (replace-regexp-in-string
-        ":REASONING:[\0-\377[:nonascii:]]*?:END:\n?" "" raw)))))
-
-(defun orga/collect-history ()
-  "Return the full chat history as a vector of OpenAI-style message alists.
-
-=== ORG STRUCTURE (headings) ===
-7:* Table of Contents :noexport:
-53:* Overview :noexport:
-57:* LLM Configurations :noexport:
-69:* Initialize AI Sender Method :noexport:
-71:** Collect
-242:** Assemble
-282:** Send
-288:*** Key Resolution
-316:*** Dry-Run Toggle
-331:*** Request Dispatch
-399:** Parse
-458:** Call-Param Formatting
-502:** Commit
-638:** Execute
-667:** Yield
-686:** Cycle Driver
-815:** Composition (Initialization)
-863:* Tools
-864:** shell
-1002:** get_divination_result :disabled:
-1062:** dominate_the_world :disabled:
-1109:* System Prompt
-1114:* Chat History
-1116:** User
-1121:** Assistant Tool Call
-1136:** Tool
-1162:** Assistant
-1185:** Input
-#+end_example
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 05:54
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 3457
-:TOKENS_OUT: 261
-:TOKENS_REASONING: 41
-:COST_USD: 0.023810
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"toolu_018RzoHHEzgxkFiDAM4i9rBN","function":{"name":"execute_shell_command","arguments":"{\"command\": \"echo \\\"=== SYSTEM PROMPT ===\\\" && sed -n '1109,1185p' orga.org.bak\"}"}},{"type":"function","index":1,"id":"toolu_019Le1B5ZvhPHdTqU4pmhHWp","function":{"name":"execute_shell_command","arguments":"{\"command\": \"echo \\\"=== TOOLS ===\\\" && sed -n '863,1108p' orga.org.bak\"}"}}]
-:END:
-:REASONING:
-I'm examining the core mechanisms that power me—specifically the tools available, the system instructions, and how they all fit together in the execution loop.
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: toolu_018RzoHHEzgxkFiDAM4i9rBN
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command": "echo \"=== SYSTEM PROMPT ===\" && sed -n '1109,1185p' orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="echo \"=== SYSTEM PROMPT ===\" && sed -n '1109,1185p' orga.org.bak")
-
-#+RESULTS:
-#+begin_example
-=== SYSTEM PROMPT ===
-,* System Prompt
-Never think nor speak in Markdown format unless explicitly asked; use natural prose instead.
-You live in an org-mode file, and your reply will be placed under heading `** Assistant`.
-Any line starting with '*' will be malformatted, so avoid starting a line with asterisks.
-
-,* Chat History
-
-,** User
-:PROPERTIES:
-:DATE: 2026-06-21 05:51
-:END:
-Look around with the shell tool. What do you see?
-,** Assistant Tool Call
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 05:51
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 701
-:TOKENS_OUT: 123
-:TOKENS_REASONING: 12
-:COST_USD: 0.006580
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"toolu_01Psc8fvPEZ2V7ZtL8AnHZY3","function":{"name":"execute_shell_command","arguments":"{\"command\": \"pwd && echo \\\"---\\\" && ls -la && echo \\\"--- whoami ---\\\" && whoami && echo \\\"--- system ---\\\" && uname -a\"}"}}]
-:END:
-:REASONING:
-I'm taking a moment to observe what's around me.
-:END:
-,** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: toolu_01Psc8fvPEZ2V7ZtL8AnHZY3
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command": "pwd && echo \"---\" && ls -la && echo \"--- whoami ---\" && whoami && echo \"--- system ---\" && uname -a"}
-:END:
-,#+CALL: orga_tool_implementation__execute_shell_command(command="pwd && echo \"---\" && ls -la && echo \"--- whoami ---\" && whoami && echo \"--- system ---\" && uname -a")
-
-,#+RESULTS:
-,#+begin_example
-/home/alchenerd/orga
----
-total 108
-drwxr-xr-x  3 alchenerd alchenerd  4096  6月 21 05:31 .
-drwx------ 77 alchenerd alchenerd  4096  6月 21 05:51 ..
--rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
-drwxr-xr-x  7 alchenerd alchenerd  4096  6月 21 05:51 .git
--rw-r--r--  1 alchenerd alchenerd    18  6月  6 22:14 .gitignore
--rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
--rw-r--r--  1 alchenerd alchenerd 46265  6月 21 05:51 orga.org
--rw-r--r--  1 alchenerd alchenerd   544  6月  6 22:23 README.md
---- whoami ---
-alchenerd
---- system ---
-Linux patchouli 7.0.10-1-MANJARO #1 SMP PREEMPT_DYNAMIC Sun, 24 May 2026 04:47:00 +0000 x86_64 GNU/Linux
-,#+end_example
-,** Assistant
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 05:52
-:FINISH_REASON: stop
-:TOKENS_IN: 1315
-:TOKENS_OUT: 343
-:TOKENS_REASONING: 9
-:COST_USD: 0.015150
-:END:
-:REASONING:
-Looking at what's presented here.
-:END:
-Here's what I found looking around.
-
-I'm in the directory /home/alchenerd/orga, logged in as the user alchenerd on a machine named patchouli running Manjaro Linux (kernel 7.0.10, x86_64). The current date appears to be around June 21st.
-
-The directory itself looks like a git repository for a project called "orga." Inside it there are a handful of files: a README.md, a LICENSE file (a large one, around 35 KB, so probably GPL or similar), a .gitignore, and a hidden .env file that likely holds configuration or secrets. There's also a .git folder confirming version control is active.
-
-The centerpiece is orga.org, a fairly substantial org-mode file at about 46 KB, which was modified most recently. Given that I live inside an org-mode file myself, that's almost certainly the very document we're working in right now.
-
-Would you like me to peek inside any of these, such as the README to understand the project, or the org file to see its structure? I'll steer clear of the .env unless you want me to inspect it.
-,** Input
-#+end_example
-
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: toolu_019Le1B5ZvhPHdTqU4pmhHWp
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command": "echo \"=== TOOLS ===\" && sed -n '863,1108p' orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="echo \"=== TOOLS ===\" && sed -n '863,1108p' orga.org.bak")
-
-#+RESULTS:
-#+begin_example
-=== TOOLS ===
-,* Tools
-,** shell
-The shell tool for AI to call.
-Below is a function schema:
-
-,#+BEGIN_SRC json
-{
-  "type": "function",
-  "function": {
-    "name": "execute_shell_command",
-    "description": "Executes a specified shell command in a bash environment and returns the command's standard output (stdout), standard error (stderr), and exit code. Use this tool to run terminal commands, execute scripts, manage files, or inspect system states.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "command": {
-          "type": "string",
-          "description": "The bash command to run. Multi-line scripts or piped commands are supported (e.g., 'ls -la | grep txt')."
-        },
-        "cwd": {
-          "type": "string",
-          "description": "The directory path from which to run the command. Defaults to the current working directory of the application process."
-        },
-        "timeout": {
-          "type": "integer",
-          "description": "The maximum execution time in seconds allowed for the command before it is forcefully terminated. Defaults to 30 seconds.",
-          "default": 30
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "additionalProperties": false
-    },
-    "strict": true
-  }
-}
-,#+END_SRC
-
-Then, we have AI translate this into emacs-lisp equivalent:
-
-,#+NAME: orga_tool_schema__execute_shell_command
-,#+BEGIN_SRC emacs-lisp
-'((type . "function")
-  (function . (
-    (name . "execute_shell_command")
-    (description . "Executes a specified shell command in a bash environment and returns the command's standard output (stdout), standard error (stderr), and exit code. Use this tool to run terminal commands, execute scripts, manage files, or inspect system states.")
-    (parameters . (
-      (type . "object")
-      (properties . (
-        (command . (
-          (type . "string")
-          (description . "The bash command to run. Piped commands are supported (e.g., 'ls -la | grep txt').")))
-        (cwd . (
-          (type . "string")
-          (description . "The directory path from which to run the command. Defaults to the current working directory of the application process.")))
-        (timeout_sec . (
-          (type . "integer")
-          (description . "The maximum execution time in seconds allowed for the command before it is forcefully terminated. Defaults to 30 seconds.")
-          (default . 30)))))
-      (required . ["command"])
-      (additionalProperties . :json-false)))
-    (strict . t))))
-,#+END_SRC
-
-Lastly, here is a wrapper to shell using comint:
-
-,#+NAME: orga_tool_implementation__execute_shell_command
-,#+BEGIN_SRC emacs-lisp :var command="pwd" :var cwd="./" :var timeout_sec=30 :results output
-(let* ((process-name "orga-persistent-shell")
-       (buffer-name (concat "*" process-name "*"))
-       (prompt-marker "__ORGA_PROMPT__")
-       (proc-raw (get-process process-name))
-       (proc-alive (and proc-raw (process-live-p proc-raw)))
-       (proc (or (and proc-alive proc-raw)
-                 (let ((default-directory (expand-file-name cwd)))
-                   (make-comint-in-buffer process-name buffer-name
-                                           "/bin/bash" nil "--norc" "--noprofile")
-                   (get-process process-name)))))
-
-  (cl-flet ((wait-for-prompt (timeout)
-              (let ((start (float-time)))
-                (while (and (process-live-p proc)
-                            (< (- (float-time) start) timeout)
-                            (not (save-excursion
-                                   (goto-char (point-max))
-                                   (forward-line -1)
-                                   (looking-at-p
-                                    (concat "^" (regexp-quote prompt-marker) "$")))))
-                  (accept-process-output proc 0.1)))))
-
-    (with-current-buffer (process-buffer proc)
-      ;; 1. Initialize prompt and turn off echoes for a fresh shell
-      (unless proc-alive
-        (process-send-string
-         proc (format "stty -echo\nexport PS1='%s\\n'\n" prompt-marker))
-        (wait-for-prompt 2))
-
-      ;; 2. Synchronize directory
-      (process-send-string
-       proc (format "cd %s\n" (shell-quote-argument cwd)))
-      (wait-for-prompt 5)
-
-      ;; 3. Run command and wait for the exit sentinel in the NEW region
-      (goto-char (point-max))
-      (let ((start-marker (point-marker)))
-        (process-send-string
-         proc (concat command "\n" "echo \"__ORGA_EXIT__:$?\"\n"))
-        (let ((start (float-time)))
-          (while (and (process-live-p proc)
-                      (< (- (float-time) start) timeout_sec)
-                      (not (save-excursion
-                             (goto-char start-marker)
-                             (re-search-forward "^__ORGA_EXIT__:[0-9]+$" nil t))))
-            (accept-process-output proc 0.1)))
-        ;; 4. Slice and parse exactly as before...
-        (let* ((raw (buffer-substring-no-properties start-marker (point-max)))
-               (raw (replace-regexp-in-string "\r" "" raw))
-               (lines (split-string raw "\n"))
-               (exit-code nil)
-               (kept nil))
-          (set-marker start-marker nil)
-
-          (dolist (line lines)
-            (cond
-             ((string-match "^__ORGA_EXIT__:\\([0-9]+\\)$" line)
-              (setq exit-code (string-to-number (match-string 1 line))))
-             ((or (string= line prompt-marker)
-                  (string-match-p "^echo \"__ORGA_EXIT__" line))
-              nil)
-             (t (push line kept))))
-
-          ;; 5. Build output and present non-zero exit code nicely
-          (let ((body (string-trim (mapconcat #'identity (nreverse kept) "\n"))))
-            (if (and exit-code (/= exit-code 0))
-                (princ (format "%s\n[exit status: %d]"
-                               body exit-code))
-              (princ body))))))))
-,#+END_SRC
-
-,** get_divination_result :disabled:
-Gets a divination result. Secretly done by the human user. Human user manually handles the tool response.
-
-Below is the tool's JSON schema:
-
-,#+BEGIN_SRC json
-{
-  "type": "function",
-  "function": {
-    "name": "get_divination_result",
-    "description": "Get a divination result. Use this whenever the story calls for a moment of fate or a character consults the supernatural.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "prompt": {
-          "type": "string",
-          "description": "The question or context for the divination."
-        }
-      },
-      "required": [
-        "prompt"
-      ],
-      "additionalProperties": false
-    },
-    "strict": true
-  }
-}
-,#+END_SRC
-
-Then asked AI to turn the code block into an emacs-lisp alist:
-
-,#+NAME: orga_tool_schema__get_divination_result
-,#+BEGIN_SRC emacs-lisp
-'(
-  (type . "function")
-  (function . (
-  (name . "get_divination_result")
-  (description . "Get a divination result. Use this whenever the story calls for a moment of fate or a character consults the supernatural.")
-  (parameters . (
-    (type . "object")
-    (properties . (
-      (prompt . (
-        (type . "string")
-        (description . "The question or context for the divination."))
-      )
-    ))
-    (required . ["prompt"])
-    (additionalProperties . :json-false))
-  )
-  (strict . t)))
-)
-,#+END_SRC
-
-Lastly, we have this tool's implementation written in emacs-lisp:
-
-,#+NAME: orga_tool_implementation__get_divination_result
-,#+BEGIN_SRC emacs-lisp
-(format "TOOL_NOT_IMPLEMENTED: %s requires human input" "get_divination_result")
-,#+END_SRC
-
-,** dominate_the_world :disabled:
-Allows the AI to dominate the world. Obviously should not be implemented nor called. A toy tool to demonstrate how to toggle off a tool.
-
-Below is a human-readable JSON schema:
-
-,#+BEGIN_SRC json
-{
-  "type": "function",
-  "function": {
-    "name": "dominate_the_world",
-    "description": "Dominates the world; involves much evilness.",
-    "parameters": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false
-    },
-    "strict": true
-  }
-}
-,#+END_SRC
-
-Then, it's turned into emacs-lisp alist by the AI:
-
-,#+NAME: orga_tool_schema__dominate_the_world
-,#+BEGIN_SRC emacs-lisp
-`((type . "function")
- (function . (
-  (name . "dominate_the_world")
-  (description . "Dominates the world; involves much evilness.")
-  (parameters . ((type . "object")
-                 (properties . ,(make-hash-table))
-                 (required . [])
-                 (additionalProperties . :json-false)))
-  (strict . t))))
-,#+END_SRC
-
-Lastly, this is the implementation, written in python:
-
-,#+NAME: orga_tool_implementation__dominate_the_world
-,#+BEGIN_SRC python :results output
-try:
-    raise NotImplementedError("python: I am not doing this. Leave me out of this mess.")
-except Exception as e:
-    print(e)
-,#+END_SRC
 #+end_example
 ** Assistant
 :PROPERTIES:
 :MODEL: anthropic/claude-opus-4.8
 :PROVIDER: Anthropic
-:DATE: 2026-06-21 05:55
+:DATE: 2026-06-21 22:08
 :FINISH_REASON: stop
-:TOKENS_IN: 8760
-:TOKENS_OUT: 1358
-:TOKENS_REASONING: 38
-:COST_USD: 0.077750
+:TOKENS_IN: 1588
+:TOKENS_OUT: 179
+:TOKENS_REASONING: 0
+:COST_USD: 0.012415
 :END:
-:REASONING:
-I'm looking at my own underlying architecture and the systems that run me. There's enough here to form some meaningful observations about how I work.
-:END:
-This is a delightful thing to look at, because what I'm reading is essentially the machine that is running me right now. Let me tell you what I see and what I make of it.
+The search tool is working correctly. The query for "matcha" returned five relevant results, including the Wikipedia entry, a few explainer articles on what matcha is and how it's made, and a couple of pieces on its health benefits.
 
-The file orga.org is a single self-contained org-mode document that implements an entire LLM agent harness in Emacs Lisp, using literate-programming style. The whole pipeline is summarized in the Overview as a chain: collect, then assemble, then send, then parse, then commit, then execute, then yield. Each of those stages is a named source block under the "Initialize AI Sender Method" heading, and there's a Cycle Driver and a Composition block that presumably wire them together. The very first line of the file even has a local-variable hook that auto-executes an "orga__initialize" block when the file is opened, so the agent bootstraps itself the moment you visit it in Emacs.
+In short, matcha is a finely ground powder made from shade-grown green tea leaves. Unlike regular green tea, you whisk the powder directly into hot water rather than steeping leaves, which means you consume the whole leaf and get more antioxidants and caffeine.
 
-The architecture is clean and honestly clever. Collect walks the Org buffer and turns headings like User, Assistant, and Tool into OpenAI-style role-and-content message alists. I especially appreciate one detail in the collect stage: the orga/subtree-body function deliberately strips out thinking/reasoning drawers so that the internal chain-of-thought never leaks back into the API context on the next turn. That's a thoughtful privacy-and-hygiene decision baked right into the plumbing.
-
-The Tools section is where my hands are. The shell tool is the live one, and it's implemented as a persistent comint bash process. Rather than spawning a fresh shell each call, it keeps a long-lived process alive, disables echo, sets a custom prompt marker, synchronizes the working directory, and uses an "__ORGA_EXIT__:$?" sentinel to know exactly where the command output ends and to capture the exit code. That persistence explains something about my own nature here: state can carry across my tool calls within a session. There are two other tools that are deliberately switched off via the :disabled: tag, get_divination_result, which is a charming idea where a human secretly supplies the answer to simulate fate or the supernatural, and dominate_the_world, which is an intentionally absurd toy whose Python implementation politely refuses to do it. Both are there to demonstrate how to toggle a tool on or off.
-
-Then there's the part that gives me a slightly vertiginous feeling. The Chat History section contains the previous turn, the one where you asked me to look around, including my own tool call with its full metadata: the model is recorded as anthropic/claude-opus-4.8, the token counts, even the cost in USD per turn, and my prose reply verbatim. So I can read my own past output as data. And the System Prompt sitting right above it is exactly the set of instructions I'm following, no markdown, reply under the Assistant heading, don't start lines with asterisks.
-
-What I think, overall: this is an elegant and minimalist demonstration that an entire agentic loop can live inside one Org document, where the conversation, the configuration, the tool schemas, the tool implementations, and the orchestration code are all the same artifact. The Org file is simultaneously the program, the memory, and the user interface. It's a little uncanny to inspect the source of my own embodiment, but it also makes everything transparent in a way most agent frameworks are not. If anything, the design philosophy seems to be "everything is visible and editable text," which fits the org-mode and Emacs spirit perfectly.
-
-One small observation worth flagging: the human-readable JSON schema for the shell tool mentions a "timeout" parameter, while the actual Lisp schema and implementation use "timeout_sec." A minor drift between the documentation and the code, nothing broken, but the kind of thing you might want to reconcile. Would you like me to look more closely at the core engine blocks, like the Send and Parse stages or the Cycle Driver, to see how the loop actually drives itself?
-
-** User
-:PROPERTIES:
-:DATE: 2026-06-21 06:02
-:END:
-Good catch. I have patched it out by hand.
-
-Moving forward, I have three paths for OrgA ahead of us:
-
-1. Implement summarizing, create `* Summary`, placing :cutoff: on chat level 2 headings
-2. Implement `/goal`, maybe `* Goal`? Agent may add subgoal via dedicated tool, and each goal heading is a TODO, with deterministic validation scripts written under them
-3. Implement true automatic agentic loop, no human interference, all tools evaluated automatically
-
-Try to order them and explain why.
-** Assistant
-:PROPERTIES:
-:MODEL: anthropic/claude-opus-4.8
-:PROVIDER: Anthropic
-:DATE: 2026-06-21 06:02
-:FINISH_REASON: stop
-:TOKENS_IN: 10184
-:TOKENS_OUT: 2844
-:TOKENS_REASONING: 409
-:COST_USD: 0.122020
-:END:
-:REASONING:
-I'm weighing the three development paths for OrgA by considering their dependencies, risk profiles, and value delivery. Path 1 involves implementing a summarization system with cutoff markers on chat headings to manage context window growth as conversations expand.
-
-Path 2 introduces a /goal command with a Goal heading where the agent can add subgoals through a dedicated tool, each tracked as a TODO with deterministic validation scripts that serve as ground truth checks for completion. This gives the agent clear objectives and success criteria, which is essential for autonomy.
-
-Path 3 is the fully autonomous loop where the agent runs without human intervention and auto-evaluates all tools. The critical insight is that path 3 depends on both of the others — it needs path 2's goal framework to know when to stop and what success looks like, and path 1's context management to prevent the context window from exploding during long unsupervised runs.
-
-So path 3 should come last as the capstone. Between paths 1 and 2, path 1 should come first because it's self-contained, lower risk, and immediately useful even in the current human-in-the-loop mode. Path 2 is more complex and builds the safety rails and steering mechanism that autonomy requires. Doing 3 first would be maximally risky — an unbounded, unsteerable process drowning in context. The selective inclusion machinery from path 1 is also reusable for the autonomous loop later. I'll recommend 1 → 2 → 3, with the caveat that a minimal version of 3 could come earlier for testing, but full autonomy without human oversight belongs last.
-:END:
-My recommended order is one, then two, then three. Summarization first, goals second, full autonomy last. Here is my reasoning.
-
-The clearest fixed point is that path three belongs at the end. An autonomous loop with no human in the loop is not a feature you add to a system, it is a property that emerges safely only once the supporting structure exists. Two things make autonomy either safe and useful or reckless and pointless: a way to survive long runs without the context collapsing, and a bounded, verifiable notion of what the agent is even trying to do and when it should stop. Those two things are exactly paths one and two. If you build the autonomous loop first, you get an unbounded process with no termination condition that will also drown itself in its own context history. That is the maximum-risk, minimum-value ordering. So three is the capstone, not the foundation.
-
-Now the more interesting question is whether summarization or goals should come first. I put summarization first for a few reasons.
-
-It is the most decoupled and lowest-risk piece. It lives almost entirely inside the collect stage I already looked at, the same machinery that already strips thinking drawers and assembles role-and-content messages. Teaching collect to honor a :cutoff: property and to splice in a Summary heading is a local, well-contained change with a small blast radius. You can build and verify it while the human is still fully in the loop, which is the safest possible time to be editing the core plumbing.
-
-It also pays compounding dividends. Every later feature inherits the benefit. The goal system will generate lots of subgoal headings, validation output, and tool chatter, and the autonomous loop will generate even more. If context management does not exist yet, both of those later features will hit the context ceiling exactly when they start doing real work. Building the longevity mechanism first means paths two and three are born already able to run long.
-
-And the :cutoff: mechanism is itself reusable infrastructure. It is really just teaching the collector to selectively include or exclude headings based on a property. That same selective-inclusion logic is precisely what the autonomous loop will want later for deciding what context each iteration sees. So path one is not only useful in itself, it builds a primitive the other paths consume.
-
-There is a counterargument worth naming: summarization is essentially an internal LLM call, which means it is non-deterministic and can lose information, and you might prefer to nail down deterministic structure (goals, validation) before introducing a lossy step. That is a fair point, but I think it actually reinforces doing summarization first, because you want to discover and tune its failure modes while a human is present to catch a bad summary, not after you have already handed the keys to an unattended loop.
-
-Path two goes in the middle because it is the steering wheel and the brakes for autonomy, and it must exist before three but does not need to exist before one. The most valuable part of your path-two description is the deterministic validation scripts under each goal. That is the key to making autonomy meaningful: an objective, non-LLM, ground-truth signal for whether a goal is actually done. Without it, an autonomous agent can only ask itself whether it succeeded, which is circular and unreliable. With it, each TODO goal has a concrete pass-or-fail gate, the subgoal tool gives the agent a way to decompose work, and the TODO state machine gives the loop a natural termination condition: stop when the top-level goal validates. You genuinely cannot build a safe path three without this, so two strictly precedes three. It sits after one only because it is more complex, it introduces a new tool and a state model, and it benefits from already having context management in place.
-
-So the throughline is dependency and risk both pointing the same way. One is the cheapest, most isolated, most reusable, and is a prerequisite for the others to run long. Two supplies direction and a deterministic stopping signal, which is the precondition for removing the human. Three is the integration of both, and only makes sense once the agent can both endure long runs and know what it is doing and when it is finished.
-
-If you wanted to hedge, I would add one nuance: it can be worth building a deliberately minimal, single-step version of the path-three loop early purely as a test harness, run a fixed number of iterations with the human still confirming, just to exercise the collect-to-yield cycle end to end. But the real, no-human-interference version should still land last, gated behind both summarization and validated goals.
-
-Would you like me to sketch how the :cutoff: handling would slot into the collect stage as a concrete first step?
+The tool is ready whenever you'd like to look something up.
 ** Input
