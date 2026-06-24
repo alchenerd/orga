@@ -16,7 +16,7 @@
 - [ ] implement `* Goal`
     - [ ] each subgoal should have a verification script that returns \
           0(shell) or \
-          t(emacs-lip) or \
+          t(emacs-lisp) or \
           True(python) on success
     - [ ] passed verification should toggle todo list under `* Goal`
     - [ ] there should be `on_pass` and `on_fail` hook script too
