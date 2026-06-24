@@ -1,6 +1,6 @@
 - [ ] implement rag
-  - [X] refactor summary
-  - [X] refactor how we read summary(read only the md block)
+  - [X] refactor `* System Prompt`
+  - [X] refactor how we read `* System Prompt`(read only the md block)
   - [ ] create a fetch tool that can handle:
     - [ ] "wiki://path/to/concept"
         - [ ] search in file under `* Wiki` header
