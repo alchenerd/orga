@@ -1068,6 +1068,39 @@ heading title above doubles as a provenance note; rename it back to
 just remember to update the eval cookie at the top of this file to
 match.
 
+* Wiki
+Add to here a forest of Markdown source blocks so OrgA can query using the `fetch(api)` tool.
+** concepts
+*** Org-mode
+#+NAME: wiki://concepts/org-mode
+#+begin_src markdown
+Insert Org-mode data here
+#+end_src
+*** LLM
+#+NAME: wiki://concepts/llm
+#+begin_src markdown
+Insert LLM data here
+#+end_src
+*** Emacs-Lisp
+#+NAME: wiki://concepts/emacs-lisp
+#+begin_src markdown
+Insert Emacs Lisp data here
+#+end_src
+*** OpenRouter
+#+NAME: wiki://concepts/openrouter
+#+begin_src markdown
+Insert OpenRouter data here
+#+end_src
+*** Org-babel
+#+NAME: wiki://concepts/org-babel
+#+begin_src markdown
+Insert Org-babel data here
+#+end_src
+*** Markdown
+#+NAME: wiki://concepts/markdown
+#+begin_src markdown
+Insert Markdown data here
+#+end_src
 * Tools
 ** shell
 The shell tool for AI to call.
@@ -1373,43 +1406,42 @@ description: An AI assistant that lives inside an Org-mode file, driven by an Em
 tags: [agent, org-mode, emacs, llm]
 ---
 
-OrgA is an [[concepts/org-mode|Org-mode]]-native [[concepts/llm|LLM]] agent. It runs entirely
-inside a single `.org` file: the [[concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
+OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
+inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
 chat history, and system prompt all cohabit the same buffer. Conversation is driven by the
 `orga/send` function, which collects context, calls an
-[[concepts/openrouter|OpenRouter]]-compatible API, and writes the reply back into the file under
-a `** Assistant` heading in [[orga/chat-history|Chat History]].
+[[wiki://concepts/openrouter|OpenRouter]]-compatible API, and writes the reply back into the file under
+a `** Assistant` heading in Chat History.
 
 ## Runtime
 
-The agent is initialized by evaluating a named [[concepts/org-babel|Org Babel]] source block on
+The agent is initialized by evaluating a named [[wiki://concepts/org-babel|Org Babel]] source block on
 file open (see the `eval:` directive in the file's first line). All logic lives in `emacs-lisp`
 src blocks grouped under `* Initialize AI Sender Method`.
 
 Context sent to the API on each turn is assembled from three sources:
 
-- **[[orga/system-prompt|System Prompt]]** — the developer-role message, extracted from the
+- **System Prompt** — the developer-role message, extracted from the
   `#+BEGIN_SRC markdown` block inside `* System Prompt`.
-- **[[orga/summary|Summary]]** — a condensed recap of turns above the `:cutoff:` marker, sent
+- **Summary** — a condensed recap of turns above the `:cutoff:` marker, sent
   as a user message to preserve older context cheaply.
-- **[[orga/chat-history|Chat History]]** — live `** User`, `** Assistant`,
+- **Chat History** — live `** User`, `** Assistant`,
   `** Assistant Tool Call`, and `** Tool` headings, collected in order.
 
 ## Tools
 
 Tools are declared under `* Tools`. Each tool subtree holds three artefacts: a human-readable
-JSON schema, an [[concepts/emacs-lisp|Emacs Lisp]] alist schema
+JSON schema, an [[wiki://concepts/emacs-lisp|Emacs Lisp]] alist schema
 (named `orga_tool_schema__<name>`), and an implementation src block
 (named `orga_tool_implementation__<name>`). A `:disabled:` tag on the heading excludes the tool
 from the API call without deleting it.
 
 ## Behaviour
 
-- Responds in natural prose; [[concepts/markdown|Markdown]] formatting only when explicitly
+- Responds in natural prose; [[wiki://concepts/markdown|Markdown]] formatting only when explicitly
   requested.
-- Never begins a line with `*`, which would be misread as an
-  [[concepts/org-mode|Org-mode]] heading.
-- Replies are inserted under `** Assistant` in [[orga/chat-history|Chat History]].
+- Never begins a line with `*`, which would be misread as an Org-mode heading.
+- Replies are inserted under `** Assistant` in Chat History.
 #+END_SRC
 
 * Summary
