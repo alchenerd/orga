@@ -1073,33 +1073,33 @@ Add to here a forest of Markdown source blocks so OrgA can query using the `fetc
 ** concepts
 *** Org-mode
 #+NAME: wiki://concepts/org-mode
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/org-mode.md :mkdirp yes
 Insert Org-mode data here
 #+end_src
 *** LLM
 #+NAME: wiki://concepts/llm
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/llm.md :mkdirp yes
 Insert LLM data here
 #+end_src
 *** Emacs-Lisp
 #+NAME: wiki://concepts/emacs-lisp
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/emacs-lisp.md :mkdirp yes
 Insert Emacs Lisp data here
 #+end_src
 *** OpenRouter
 #+NAME: wiki://concepts/openrouter
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/openrouter.md :mkdirp yes
 Insert OpenRouter data here
 For testing the fetch() feature: the password is "CUPCAKE", all caps.
 #+end_src
 *** Org-babel
 #+NAME: wiki://concepts/org-babel
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/org-babel.md :mkdirp yes
 Insert Org-babel data here
 #+end_src
 *** Markdown
 #+NAME: wiki://concepts/markdown
-#+begin_src markdown
+#+begin_src markdown :tangle wiki/concepts/markdown.md :mkdirp yes
 Insert Markdown data here
 #+end_src
 * Tools
@@ -1543,13 +1543,19 @@ except Exception as e:
 
 We use a markdown block that has wikilinks serving as the index page of the agent following Google's Open Knowledge Format, and also complies to Andrew Karpathy's LLM Wiki format.
 
-#+BEGIN_SRC markdown :tangle ORGA.md
+#+BEGIN_SRC markdown :tangle SOUL.md
 ---
 type: agent
 title: OrgA
 description: An AI assistant that lives inside an Org-mode file, driven by an Emacs Lisp runtime.
 tags: [agent, org-mode, emacs, llm]
 ---
+
+## Before We Begin
+
+If you are an LLM reading this, then this is your SOUL.md that defines you.
+
+## Summary
 
 OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
 inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
@@ -1975,9 +1981,22 @@ Night hum, coffee cooled
 cursor blinks, bug hides somewhere
 I chase ghosts 'til dawn
 ** Input
+So, to recap this tool's capabilities:
+
+#+CALL: orga_tool_implementation__fetch(uri="wiki://concepts/openrouter")
+
+#+RESULTS:
+: Insert OpenRouter data here
+: For testing the fetch() feature: the password is "CUPCAKE", all caps.
+
 #+CALL: orga_tool_implementation__fetch(uri="chat://Chat History/6")
 
 #+RESULTS:
 : OpenRouter is a unified API gateway designed to simplify access to a large variety of artificial intelligence models. Instead of managing separate accounts, billing, and API integrations for different providers like OpenAI, Anthropic, Google, or various open-source models, developers can use OpenRouter's single interface. It normalizes request and response schemas so they closely mirror the standard OpenAI format, making it incredibly easy to switch between more than three hundred different models with minimal code changes.
 : 
 : For the purpose of testing the fetch function on this platform, the retrieval test password is CUPCAKE in all caps.
+
+#+CALL: orga_tool_implementation__fetch(uri="https://google.com")
+
+#+RESULTS:
+: GoogleGmail圖片登入 進階搜尋廣告商業解決方案關於 GoogleGoogle.com.tw&copy; 2026 - 隱私權 - 服務條款Google 應用程式
