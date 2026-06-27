@@ -1428,7 +1428,7 @@ Lastly, the implementation written in elisp:
  ((string-prefix-p "chat://" uri)
   (let* ((path    (substring uri (length "chat://")))
          (slash   (string-match "/" path))
-         (heading (if slash (substring path 0 slash) path))
+         (heading (decode-coding-string (url-unhex-string (if slash (substring path 0 slash) path)) 'utf-8))
          (n-str   (if slash (substring path (1+ slash)) "1"))
          (n       (string-to-number n-str))
          (found   nil))
@@ -1975,3 +1975,9 @@ Night hum, coffee cooled
 cursor blinks, bug hides somewhere
 I chase ghosts 'til dawn
 ** Input
+#+CALL: orga_tool_implementation__fetch(uri="chat://Chat History/6")
+
+#+RESULTS:
+: OpenRouter is a unified API gateway designed to simplify access to a large variety of artificial intelligence models. Instead of managing separate accounts, billing, and API integrations for different providers like OpenAI, Anthropic, Google, or various open-source models, developers can use OpenRouter's single interface. It normalizes request and response schemas so they closely mirror the standard OpenAI format, making it incredibly easy to switch between more than three hundred different models with minimal code changes.
+: 
+: For the purpose of testing the fetch function on this platform, the retrieval test password is CUPCAKE in all caps.
