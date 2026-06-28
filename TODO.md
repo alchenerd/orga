@@ -1,12 +1,6 @@
-- [X] implement RAG
-  - [X] refactor `* System Prompt`
-  - [X] refactor how we read `* System Prompt`(read only the md block)
-  - [X] add wiki section
-  - [X] create a fetch tool that can handle:
-    - [X] "wiki://path/to/concept"
-    - [X] "chat://{{top-level-header}}/{{id}}"
-    - [X] "https://path/to/webpage"
 - [ ] implement `* Goal`
+    - [X] find out how to call orga headlessly
+    - [X] make chat cycle loop tool evaluation automatic
     - [ ] each subgoal should have a verification script that returns \
           0(shell) or \
           t(emacs-lisp) or \

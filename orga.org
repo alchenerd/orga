@@ -499,10 +499,10 @@ comments.
 #+NAME: orga_core__commit
 #+BEGIN_SRC emacs-lisp
 (cl-defun orga/handle-response (response model timestamp dry-run)
-  "Insert RESPONSE (from `orga/parse-response') into the buffer.
+  "Write RESPONSE (from `orga/parse-response') into the buffer (Commit stage).
 MODEL and TIMESTAMP are strings used in the inserted headings.
-Dispatches on finish-reason: tool_calls → scaffold ** Tool headings;
-anything else → insert ** Assistant reply and a fresh ** Input."
+Returns :tool-calls when the model requested tool calls (** Tool headings
+scaffolded), or :reply when a plain text reply was written."
   (when (null response) (cl-return-from orga/handle-response nil))
   (let* ((ai-reply         (plist-get response :content))
          (finish-reason    (or (plist-get response :finish-reason) "unknown"))
@@ -551,7 +551,7 @@ anything else → insert ** Assistant reply and a fresh ** Input."
                 (org-fold-hide-drawer-all)
               (org-hide-drawer-all)))
 
-          ;; c. One ** Tool heading per tool call — NO ** Input follows.
+          ;; c. One ** Tool heading per tool call
           (mapc
            (lambda (tc)
              (let* ((call-id    (or (cdr (assoc 'id tc)) ""))
@@ -586,10 +586,12 @@ anything else → insert ** Assistant reply and a fresh ** Input."
 
           (org-reveal)
           (goto-char (point-max))
-          (message "OrgA: tool call(s) received -- fill in ** Tool sections, then C-c C-v to continue."))
+          (recenter -1)
+          (redisplay)
+          :tool-calls)
 
       ;; ---------------------------------------------------------------------
-      ;; Regular assistant text reply — append heading + fresh ** Input.
+      ;; Regular assistant text reply
       ;; ---------------------------------------------------------------------
       (insert (format (concat "** Assistant\n"
                               ":PROPERTIES:\n"
@@ -616,11 +618,7 @@ anything else → insert ** Assistant reply and a fresh ** Input."
             (org-fold-hide-drawer-all)
           (org-hide-drawer-all)))
       (goto-char (point-max))
-      (unless (bolp) (insert "\n"))
-      (unless orga/dry-run (insert "** Input\n"))
-      (org-reveal)
-      (goto-char (point-max))
-      (message "OrgA: reply received."))))
+      :reply)))
 #+END_SRC
 
 ** Execute
@@ -632,10 +630,20 @@ like "evaluate every =#+CALL:= line emitted by Commit for this turn,
 in place."
 
 - [X] Create an "Evaluate all fresh `#+CALL` lines" function
-- [ ] Create an "Auto-evaluate flag"
+- [X] Create an "Auto-evaluate flag"
 
 #+NAME: orga_core__execute
 #+BEGIN_SRC emacs-lisp
+;; -----------------------------------------------------------------------------------------------
+;; WARNING: Only enable orga/auto-eval-p if you trust the LLM to use every tool against you.
+;;          If you enabled this with the shell tool present, you deserve to be hacked by the LLM.
+;; -----------------------------------------------------------------------------------------------
+(defvar orga/auto-eval-p nil
+  "When non-nil, tool #+CALL: lines are executed automatically after
+the model emits a tool_calls response, and ai-chat-cycle loops to
+send the results without requiring a manual C-c C-v.
+Set to nil to restore the old manual workflow.")
+
 (defun orga/execute-all-calls (&optional force)
   "Execute every #+CALL: line lacking existing results, scanning
 bottom to top.  Stops entirely the moment a heading matching
@@ -654,21 +662,46 @@ bottom to top.  Stops entirely the moment a heading matching
 
 ** Yield
 
-Decides what happens after Commit (and, eventually, Execute): append
-a fresh =** Input= and stop, or message the user to fill in
-=** Tool= results and stop.
+Receives the keyword returned by Commit (=:tool-calls= or =:reply=) and
+decides what happens next:
 
-Migrates from orga.org (the tail portion of =orga/handle-response=,
-L550-586):
-- tool-calls branch tail: =org-reveal=, "fill in ** Tool sections" message
-- text-reply branch tail: append =** Input=, =org-reveal=, "reply received" message
+- =:reply= — append a fresh =** Input=, reveal, message "reply received", return =:done=.
+- =:tool-calls= with =orga/auto-eval-p= on — run =orga/execute-all-calls=, return =:continue=
+  so the cycle driver loops and resends.
+- =:tool-calls= with =orga/auto-eval-p= off — message the user to fill in =** Tool=
+  sections manually, return =:done=.
 
-Refactor note: today this is unconditional ("always stop here"). Once
-Execute is real, this is where the loop-vs-stop decision point goes.
+=ai-chat-cycle= inspects the return value: =:continue= keeps the loop going;
+anything else throws =orga/done=.
 
 #+NAME: orga_core__yield
 #+BEGIN_SRC emacs-lisp
-;; TODO migrate here (see list above). No logic yet.
+(defun orga/yield (commit-result dry-run)
+  "Act on COMMIT-RESULT (:tool-calls or :reply) and return :continue or :done.
+This is the Yield stage: it appends ** Input on a plain reply, or runs
+Execute and decides loop-vs-stop on a tool_calls response."
+  (pcase commit-result
+    (:tool-calls
+     (if orga/auto-eval-p
+         (progn
+           (message "OrgA: tool call(s) received -- auto-executing #+CALL: lines...")
+           (orga/execute-all-calls)
+           (goto-char (point-max))
+           (recenter -1)
+           (redisplay)
+           :continue)
+       (message "OrgA: tool call(s) received -- fill in ** Tool sections, then C-c C-v to continue.")
+       :done))
+    (:reply
+     (goto-char (point-max))
+     (unless (bolp) (insert "\n"))
+     (unless dry-run (insert "** Input\n"))
+     (org-reveal)
+     (goto-char (point-max))
+     (message "OrgA: reply received.")
+     :done)
+    (_
+     :done)))
 #+END_SRC
 
 ** Compaction
@@ -951,65 +984,74 @@ Tool result body is still empty."
 (defun ai-chat-cycle ()
   "Send the current turn to the AI and append the reply.
 
-Two modes are detected automatically:
+Orchestrates the pipeline: Collect → Assemble → Send → Parse → Commit → Yield.
+Loops when Yield returns :continue (auto-executed tool calls); stops on :done.
+
+Two entry modes are detected automatically on each iteration:
 
 NORMAL MODE — a ** Input heading exists with content:
   The heading is committed as a dated ** User message, the API is called,
-  and a ** Assistant reply is appended followed by a fresh ** Input.
+  and orga/yield appends a fresh ** Input.
 
-TOOL-RESULT MODE — the last ** Assistant Tool Call heading is present and
-  every subsequent ** Tool sibling has a non-empty body:
-  No ** Input conversion takes place.  The filled tool results are already
-  part of the history (via orga/collect-history).  The API is called and
-  the reply is appended followed by a fresh ** Input.
-
-When the model itself responds with tool calls (finish_reason = tool_calls):
-  - A ** Assistant Tool Call heading is inserted with :TOOL_CALLS_JSON:.
-  - One ** Tool heading per call with :TOOL_CALL_ID:, :FUNCTION_NAME:,
-    :ARGUMENTS: and either a #+CALL: line or a placeholder comment.
-  - No ** Input is appended; C-c C-v again after filling the results.
+TOOL-RESULT MODE — after auto-execution (Yield returned :continue), or when
+  the user has manually filled every ** Tool sibling and re-invokes.
+  The filled tool results are sent back to the model.
 
 Bound to C-c C-v by the file-local eval cookie at the top of this file."
   (interactive)
-  (let ((model     <<openrouter_model>>)
-        (timestamp (format-time-string "%Y-%m-%d %H:%M")))
-    (orga/maybe-auto-compact model)
-    (cond
+  ;; continue-p: set by Yield returning :continue (auto-executed tool calls).
+  ;; Bypasses orga/pending-tool-results-p on the next iteration so we resend
+  ;; immediately without relying on Babel results being inside the subtree.
+  (let (continue-p)
+    (catch 'orga/done
+      (while t
+        (let ((model     <<openrouter_model>>)
+              (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+          (orga/maybe-auto-compact model)
+          (cond
 
-     ;; -----------------------------------------------------------------------
-     ;; TOOL-RESULT MODE: all ** Tool bodies are filled — send results to API.
-     ;; -----------------------------------------------------------------------
-     ((orga/pending-tool-results-p)
-      (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
-      (let* ((context  (orga/create-context))
-             (tools    (orga/collect-tools))
-             (raw      (orga/send-request model context tools orga/dry-run))
-             (response (and raw (orga/parse-response raw))))
-        (orga/handle-response response model timestamp orga/dry-run)))
+           ;; -----------------------------------------------------------------
+           ;; TOOL-RESULT MODE
+           ;; -----------------------------------------------------------------
+           ((or continue-p (orga/pending-tool-results-p))
+            (setq continue-p nil)
+            (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
+            (let* ((context  (orga/create-context))
+                   (tools    (orga/collect-tools))
+                   (raw      (orga/send-request model context tools orga/dry-run))
+                   (response (and raw (orga/parse-response raw)))
+                   (commit   (orga/handle-response response model timestamp orga/dry-run))
+                   (yield    (orga/yield commit orga/dry-run)))
+              (if (eq yield :continue)
+                  (setq continue-p t)
+                (throw 'orga/done nil))))
 
-     ;; -----------------------------------------------------------------------
-     ;; NORMAL MODE: commit ** Input as ** User and call API.
-     ;; -----------------------------------------------------------------------
-     (t
-      (pcase (orga/read-input-heading)
-        ('nil
-         (message "OrgA: nothing to send (no ** Input and no pending tool results)."))
-        (`(,start ,end ,user-text)
-         (when (string-empty-p user-text)
-           (user-error "OrgA: ** Input is empty -- write something first"))
-         ;; 1. Overwrite the ** Input subtree with a dated ** User entry
-         (delete-region start end)
-         (goto-char (point-max))
-         (unless (bolp) (insert "\n"))
-         (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
-                         timestamp user-text))
-         ;; 2. Call API
-         (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
-         (let* ((context  (orga/create-context))
-                (tools    (orga/collect-tools))
-                (raw      (orga/send-request model context tools orga/dry-run))
-                (response (and raw (orga/parse-response raw))))
-           (orga/handle-response response model timestamp orga/dry-run))))))))
+           ;; -----------------------------------------------------------------
+           ;; NORMAL MODE
+           ;; -----------------------------------------------------------------
+           (t
+            (pcase (orga/read-input-heading)
+              ('nil
+               (message "OrgA: nothing to send (no ** Input and no pending tool results).")
+               (throw 'orga/done nil))
+              (`(,start ,end ,user-text)
+               (when (string-empty-p user-text)
+                 (user-error "OrgA: ** Input is empty -- write something first"))
+               (delete-region start end)
+               (goto-char (point-max))
+               (unless (bolp) (insert "\n"))
+               (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
+                               timestamp user-text))
+               (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
+               (let* ((context  (orga/create-context))
+                      (tools    (orga/collect-tools))
+                      (raw      (orga/send-request model context tools orga/dry-run))
+                      (response (and raw (orga/parse-response raw)))
+                      (commit   (orga/handle-response response model timestamp orga/dry-run))
+                      (yield    (orga/yield commit orga/dry-run)))
+                 (if (eq yield :continue)
+                     (setq continue-p t)
+                   (throw 'orga/done nil))))))))))))
 #+END_SRC
 
 ** Composition (Initialization)
@@ -1606,38 +1648,611 @@ from the API call without deleting it.
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-28 01:22
+:DATE: 2026-06-29 01:27
 :END:
 Introduce yourself.
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-28 01:22
+:DATE: 2026-06-29 01:27
 :FINISH_REASON: stop
-:TOKENS_IN: 929
-:TOKENS_OUT: 969
-:TOKENS_REASONING: 844
-:COST_USD: 0.010115
+:TOKENS_IN: 927
+:TOKENS_OUT: 1057
+:TOKENS_REASONING: 927
+:COST_USD: 0.010903
 :END:
 :REASONING:
-**Defining My Identity**
+**Introducing OrgA**
 
-I'm an AI assistant within an Org-mode file, powered by Emacs Lisp. My core function is to be an LLM, as per my description.
+I am OrgA, an Org-mode-native LLM agent. My existence is confined within a single `.org` file, and I am driven by its structure and content. I've been processing the initial instructions to understand my role and capabilities within this framework.
 
-**Refining My Introduction**
+**Refining Response Format**
 
-I'm currently focusing on how best to introduce myself as OrgA. Since no immediate wikilinks are critical to understanding my context, I'll proceed with introducing myself directly.
+I am now focusing on adhering to the precise formatting directives. Specifically, I'm ensuring my responses are strictly in natural prose, avoiding any Markdown elements unless explicitly instructed to do so, and carefully omitting any characters that could be misinterpreted as Org-mode syntax, like leading asterisks.
 
-**Crafting My Response**
+**Adhering to Constraints**
 
-I'm reviewing the output to ensure it adheres to the specified constraints. My current focus is on omitting any Markdown formatting, as per the instructions, and ensuring the tone is natural and concise for an expert audience.
+I'm carefully reviewing the output, ensuring no markdown characters or wikilinks are present. My priority is to maintain pure plain text, avoiding any formatting that could be misinterpreted within the Org-mode structure.
+
+**Processing Prompt Details**
+
+I am now actively processing the specifics of your instructions. My current focus is on generating responses that strictly adhere to the plain text, unformatted prose requirement, ensuring no Org-mode syntax or markdown is accidentally included.
 
 
 :END:
-Hello! I am OrgA, an Org-mode-native AI assistant designed to live and run entirely inside an Org-mode file. In my environment, everything including the Emacs Lisp runtime, tools, system prompts, and conversation history coexists within a single buffer.
+Hello! I am OrgA, an Org-mode-native AI assistant.
 
-I am driven by Emacs Lisp and can execute tasks, manage information, and leverage tools integrated directly into my Org-mode environment. Because of this unique setup, I always communicate in plain, natural prose and make sure my replies are structured in a way that respects Org-mode formatting rules.
+I operate entirely inside a single Org-mode file, where my Emacs Lisp runtime, tool definitions, system prompt, and chat history all live together in the same buffer. Conversation is powered by a special Emacs Lisp function that manages the context and writes my responses directly back into the file. 
 
-How can I assist you today?
-** Input
+To maintain the correct structure of our shared file, I express myself in natural prose and make sure to never start a line with an asterisk, as that could be misread as an Org-mode heading. 
+
+How can I help you today?
+
+** User
+:PROPERTIES:
+:DATE: 2026-06-29 01:28
+:END:
+Check orga.org.bak to see how you were made.
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1071
+:TOKENS_OUT: 143
+:TOKENS_REASONING: 123
+:COST_USD: 0.002893
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_T57hZny9F0YhCAmnX8WL","function":{"name":"execute_shell_command","arguments":"{\"command\":\"ls -la\"}"}}]
+:END:
+:REASONING:
+**Investigating Creation Process**
+
+I'm currently examining `orga.org.bak` to understand my origins. My immediate focus is on locating this file within the workspace or utilizing shell commands to retrieve its contents and gain insight into my development.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_T57hZny9F0YhCAmnX8WL
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"ls -la"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="ls -la")
+
+#+RESULTS:
+#+begin_example
+total 220
+drwxr-xr-x  4 alchenerd alchenerd  4096  6月 29 01:14 .
+drwx------ 77 alchenerd alchenerd  4096  6月 29 01:24 ..
+-rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
+drwxr-xr-x  7 alchenerd alchenerd  4096  6月 29 01:28 .git
+-rw-r--r--  1 alchenerd alchenerd    18  6月  6 22:14 .gitignore
+-rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
+-rw-r--r--  1 alchenerd alchenerd 74127  6月 29 01:28 orga.org
+-rw-r--r--  1 alchenerd alchenerd 73625  6月 29 01:11 orga.org.bak
+-rw-r--r--  1 alchenerd alchenerd   944  6月 28 23:10 README.md
+-rw-r--r--  1 alchenerd alchenerd  2506  6月 28 01:18 SOUL.md
+-rw-r--r--  1 alchenerd alchenerd  1007  6月 28 23:11 TODO.md
+drwxr-xr-x  3 alchenerd alchenerd  4096  6月 28 00:51 wiki
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1555
+:TOKENS_OUT: 177
+:TOKENS_REASONING: 147
+:COST_USD: 0.003926
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_W7Mm5ZgIpjmfe0RoWVAD","function":{"name":"execute_shell_command","arguments":"{\"command\":\"grep -E \\\"^\\\\* \\\" orga.org.bak\"}"}}]
+:END:
+:REASONING:
+**Analyzing OrgA Creation**
+
+I'm currently scrutinizing `orga.org.bak` to understand OrgA's construction. My immediate goal is to determine the best method for viewing its contents, prioritizing `execute_shell_command` if a more specialized tool isn't readily apparent. I'll review critical sections or the entirety of the file as needed.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_W7Mm5ZgIpjmfe0RoWVAD
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"grep -E \"^\\* \" orga.org.bak"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="grep -E \"^\\* \" orga.org.bak")
+
+#+RESULTS:
+: * LLM Configurations :noexport:
+: * Initialize AI Sender Method :noexport:
+: * Wiki
+: * Tools
+: * System Prompt
+: * Summary
+: * Chat History
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1670
+:TOKENS_OUT: 144
+:TOKENS_REASONING: 114
+:COST_USD: 0.003801
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_LT6luZlioqPLDuOl0ygT","function":{"name":"execute_shell_command","arguments":"{\"command\":\"head -n 120 orga.org.bak\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_LT6luZlioqPLDuOl0ygT
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"head -n 120 orga.org.bak"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="head -n 120 orga.org.bak")
+
+#+RESULTS:
+#+begin_example
+-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-
+
+,#+TITLE: OrgA
+,#+DESCRIPTION: An agent who lives in org-mode.
+,#+STARTUP: showall
+
+,* LLM Configurations :noexport:
+
+,#+NAME: openrouter_key
+,#+BEGIN_SRC text
+""
+,#+END_SRC
+
+,#+NAME: openrouter_model
+,#+BEGIN_SRC text
+"google/gemini-3.5-flash"
+,#+END_SRC
+
+,* Initialize AI Sender Method :noexport:
+,** Collect
+
+Collects raw inputs from the Org buffer and shape them into
+`(:role :content)` lists: chat history, system prompt.
+Also collects tool schemas.
+
+,#+NAME: orga_core__collect
+,#+BEGIN_SRC emacs-lisp
+(defun orga/subtree-body ()
+  "Return the message body of the subtree whose heading is at point.
+Skips the :PROPERTIES: drawer and strips any :REASONING:...:END: drawers
+so internal chain-of-thought never leaks back into the API context.
+Result is trimmed."
+  (save-excursion
+    (forward-line 1)
+    ;; Skip :PROPERTIES:...:END:
+    (when (looking-at "[ \t]*:PROPERTIES:")
+      (re-search-forward "^[ \t]*:END:" nil t)
+      (forward-line 1))
+    ;; Collect the raw subtree body
+    (let* ((beg (point))
+           (end (progn (org-end-of-subtree t) (point)))
+           (raw (buffer-substring-no-properties beg end)))
+      ;; Strip :REASONING:...:END: blocks (non-greedy, multiline)
+      (string-trim
+       (replace-regexp-in-string
+        ":REASONING:[\0-\377[:nonascii:]]*?:END:\n?" "" raw)))))
+
+(defun orga/collect-history ()
+  "Return the full chat history as a vector of OpenAI-style message alists.
+Scans ** User, ** Input, ** Assistant, ** Assistant Tool Call, and ** Tool
+headings inside * Chat History.
+All Org metadata (property drawers, :REPLY: wrappers) is stripped so only
+plain content reaches the API.
+
+For ** Assistant Tool Call headings the :TOOL_CALLS_JSON: property is
+decoded back into the tool_calls array expected by the API.
+
+For ** Tool headings the :TOOL_CALL_ID: and :FUNCTION_NAME: properties
+supply the metadata; the subtree body is the tool result content."
+  (let (messages)
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^\\* Chat History" nil t)
+        (error "OrgA: no '* Chat History' section found"))
+      (let ((section-end (save-excursion (org-end-of-subtree t) (point))))
+        ;; Honor the latest :cutoff: marker: turns at or above it are
+        ;; represented by * Summary, so begin collecting after its subtree.
+        (let ((cutoff-pos
+               (save-excursion
+                 (let (pos)
+                   (while (re-search-forward "^\\*\\* .*:cutoff:" section-end t)
+                     (setq pos (match-beginning 0)))
+                   pos))))
+          (when cutoff-pos
+            (goto-char cutoff-pos)
+            (org-end-of-subtree t)))
+        (while (re-search-forward
+                "^\\*\\* \\(User\\|Input\\|Assistant Tool Call\\|Assistant\\|Tool\\)"
+                section-end t)
+          (let* ((kind    (match-string 1))
+                 (props   (save-excursion
+                            (forward-line 1)
+                            (when (looking-at "[ \t]*:PROPERTIES:")
+                              (let ((drawer-start (point))
+                                    (drawer-end   (progn
+                                                    (re-search-forward "^[ \t]*:END:" nil t)
+                                                    (point))))
+                                (let ((text (buffer-substring-no-properties
+                                             drawer-start drawer-end)))
+                                  text)))))
+                 (get-prop (lambda (name)
+                             (when props
+                               (when (string-match
+                                      (concat ":" name ":[ \t]+\\([^\n]+\\)") props)
+                                 (string-trim (match-string 1 props))))))
+                 (content (orga/subtree-body)))
+            (pcase kind
+              ;; Plain user message
+              ((or "User" "Input")
+               (unless (string-empty-p content)
+                 (push `((role . "user") (content . ,content)) messages)))
+
+              ;; Regular assistant text reply
+              ("Assistant"
+               (unless (string-empty-p content)
+                 (push `((role . "assistant") (content . ,content)) messages)))
+
+              ;; Assistant message that contained tool calls -- reconstruct
+              ;; the tool_calls array from the stored JSON property.
+              ("Assistant Tool Call"
+               (let* ((tc-json (funcall get-prop "TOOL_CALLS_JSON"))
+                      (json-object-type 'alist)
+                      (json-array-type  'vector)
+                      (tc-parsed (when tc-json
+                                   (ignore-errors (json-read-from-string tc-json)))))
+                 (when tc-parsed
+                   (push `((role       . "assistant")
+                           (content    . :null)
+                           (tool_calls . ,tc-parsed))
+                         messages))))
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 3042
+:TOKENS_OUT: 128
+:TOKENS_REASONING: 97
+:COST_USD: 0.005715
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_DgTgBe9ZNuMCouSvZwvj","function":{"name":"execute_shell_command","arguments":"{\"command\":\"grep -n \\\"^#+NAME:\\\" orga.org.bak\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_DgTgBe9ZNuMCouSvZwvj
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"grep -n \"^#+NAME:\" orga.org.bak"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="grep -n \"^#+NAME:\" orga.org.bak")
+
+#+RESULTS:
+#+begin_example
+9:#+NAME: openrouter_key
+14:#+NAME: openrouter_model
+26:#+NAME: orga_core__collect
+229:#+NAME: orga_core__assemble
+278:#+NAME: orga_core__key-resolution
+306:#+NAME: orga_core__dry-run
+321:#+NAME: orga_core__send-request
+389:#+NAME: orga_core__parse-response
+451:#+NAME: orga_core__call-params
+499:#+NAME: orga_core__commit
+633:#+NAME: orga_core__execute
+671:#+NAME: orga_core__yield
+699:#+NAME: orga_core__compaction
+921:#+NAME: orga_core__cycle-driver
+1057:#+NAME: orga__keybindings
+1072:#+NAME: orga__initialize
+1108:#+NAME: wiki://concepts/org-mode
+1113:#+NAME: wiki://concepts/llm
+1118:#+NAME: wiki://concepts/emacs-lisp
+1123:#+NAME: wiki://concepts/openrouter
+1129:#+NAME: wiki://concepts/org-babel
+1134:#+NAME: wiki://concepts/markdown
+1179:#+NAME: orga_tool_schema__execute_shell_command
+1205:#+NAME: orga_tool_implementation__execute_shell_command
+1313:#+NAME: orga_tool_schema__web_search
+1336:#+NAME: orga_tool_implementation__web_search
+1418:#+NAME: orga_tool_schema__fetch
+1432:#+NAME: orga_tool_implementation__fetch
+1553:#+NAME: orga_tool_schema__conquer_the_world
+1568:#+NAME: orga_tool_implementation__conquer_the_world
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 3609
+:TOKENS_OUT: 155
+:TOKENS_REASONING: 118
+:COST_USD: 0.006809
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_gab8R0iWNRdrIJ2izhRR","function":{"name":"execute_shell_command","arguments":"{\"command\":\"sed -n '921,1056p' orga.org.bak\"}"}}]
+:END:
+:REASONING:
+**Exploring Initialization Sequence**
+
+I'm currently reviewing the `orga.org.bak` file, specifically lines 1072 through 1107, to understand my foundational creation process. My focus is on the `orga__initialize` function and the mechanics of the cyclic driver.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_gab8R0iWNRdrIJ2izhRR
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"sed -n '921,1056p' orga.org.bak"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="sed -n '921,1056p' orga.org.bak")
+
+#+RESULTS:
+#+begin_example
+,#+NAME: orga_core__cycle-driver
+,#+BEGIN_SRC emacs-lisp :noweb yes
+(defun orga/pending-tool-results-p ()
+  "Return non-nil when the chat has tool results ready to send.
+Specifically: the last '** Assistant Tool Call' heading in * Chat History
+is followed by at least one '** Tool' sibling, and every such sibling has
+a non-empty body (i.e. the user has filled in all results).
+
+Returns nil when the history is empty, has no tool calls, or when any
+Tool result body is still empty."
+  (cl-block orga/pending-tool-results-p
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^\\* Chat History" nil t)
+        (cl-return-from orga/pending-tool-results-p nil))
+      (let* ((section-end (save-excursion (org-end-of-subtree t) (point)))
+             ;; Find the last ** Assistant Tool Call in the section
+             (last-tc-pos
+              (save-excursion
+                (let (pos)
+                  (while (re-search-forward "^\\*\\* Assistant Tool Call" section-end t)
+                    (setq pos (match-beginning 0)))
+                  pos))))
+        ;; No tool call heading at all → not in tool-result mode
+        (unless last-tc-pos
+          (cl-return-from orga/pending-tool-results-p nil))
+        ;; If a ** Input heading exists after the last tool call, we're back
+        ;; in normal input mode → not pending tool results
+        (when (save-excursion
+                (goto-char last-tc-pos)
+                (org-end-of-subtree t)
+                (re-search-forward "^\\*\\* Input" section-end t))
+          (cl-return-from orga/pending-tool-results-p nil))
+        ;; Collect ** Tool headings that are siblings after the last tool call
+        (let* ((tc-end (save-excursion
+                         (goto-char last-tc-pos)
+                         (org-end-of-subtree t)
+                         (point)))
+               (tool-headings
+                (save-excursion
+                  (goto-char tc-end)
+                  (let (positions)
+                    (while (re-search-forward "^\\*\\* Tool" section-end t)
+                      (push (match-beginning 0) positions))
+                    (nreverse positions)))))
+          ;; There must be at least one Tool heading, and every one must be filled
+          (and tool-headings
+               (cl-every
+                (lambda (pos)
+                  (save-excursion
+                    (goto-char pos)
+                    (not (string-empty-p (orga/subtree-body)))))
+                tool-headings)))))))
+
+(defun ai-chat-cycle ()
+  "Send the current turn to the AI and append the reply.
+
+Orchestrates the pipeline: Collect → Assemble → Send → Parse → Commit → Yield.
+Loops when Yield returns :continue (auto-executed tool calls); stops on :done.
+
+Two entry modes are detected automatically on each iteration:
+
+NORMAL MODE — a ** Input heading exists with content:
+  The heading is committed as a dated ** User message, the API is called,
+  and orga/yield appends a fresh ** Input.
+
+TOOL-RESULT MODE — after auto-execution (Yield returned :continue), or when
+  the user has manually filled every ** Tool sibling and re-invokes.
+  The filled tool results are sent back to the model.
+
+Bound to C-c C-v by the file-local eval cookie at the top of this file."
+  (interactive)
+  ;; continue-p: set by Yield returning :continue (auto-executed tool calls).
+  ;; Bypasses orga/pending-tool-results-p on the next iteration so we resend
+  ;; immediately without relying on Babel results being inside the subtree.
+  (let (continue-p)
+    (catch 'orga/done
+      (while t
+        (let ((model     <<openrouter_model>>)
+              (timestamp (format-time-string "%Y-%m-%d %H:%M")))
+          (orga/maybe-auto-compact model)
+          (cond
+
+           ;; -----------------------------------------------------------------
+           ;; TOOL-RESULT MODE
+           ;; -----------------------------------------------------------------
+           ((or continue-p (orga/pending-tool-results-p))
+            (setq continue-p nil)
+            (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
+            (let* ((context  (orga/create-context))
+                   (tools    (orga/collect-tools))
+                   (raw      (orga/send-request model context tools orga/dry-run))
+                   (response (and raw (orga/parse-response raw)))
+                   (commit   (orga/handle-response response model timestamp orga/dry-run))
+                   (yield    (orga/yield commit orga/dry-run)))
+              (if (eq yield :continue)
+                  (setq continue-p t)
+                (throw 'orga/done nil))))
+
+           ;; -----------------------------------------------------------------
+           ;; NORMAL MODE
+           ;; -----------------------------------------------------------------
+           (t
+            (pcase (orga/read-input-heading)
+              ('nil
+               (message "OrgA: nothing to send (no ** Input and no pending tool results).")
+               (throw 'orga/done nil))
+              (`(,start ,end ,user-text)
+               (when (string-empty-p user-text)
+                 (user-error "OrgA: ** Input is empty -- write something first"))
+               (delete-region start end)
+               (goto-char (point-max))
+               (unless (bolp) (insert "\n"))
+               (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
+                               timestamp user-text))
+               (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
+               (let* ((context  (orga/create-context))
+                      (tools    (orga/collect-tools))
+                      (raw      (orga/send-request model context tools orga/dry-run))
+                      (response (and raw (orga/parse-response raw)))
+                      (commit   (orga/handle-response response model timestamp orga/dry-run))
+                      (yield    (orga/yield commit orga/dry-run)))
+                 (if (eq yield :continue)
+                     (setq continue-p t)
+                   (throw 'orga/done nil))))))))))))
+,#+END_SRC
+
+,** Composition (Initialization)
+
+This is what =init_ai= becomes once every leaf block above is filled
+in -- a thin splice, no logic of its own. It's already live: the
+file-local eval cookie at the top of this file targets
+=orga__initialize= directly (instead of =init_ai=), so opening this
+file runs the same splice-and-load sequence orga.org's cookie ran for
+=init_ai=, in the =<<noweb>>= order below:
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:28
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 5403
+:TOKENS_OUT: 204
+:TOKENS_REASONING: 166
+:COST_USD: 0.009940
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_kub6MKibZ3HSf3016A0r","function":{"name":"execute_shell_command","arguments":"{\"command\":\"sed -n '1553,1650p' orga.org.bak\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_kub6MKibZ3HSf3016A0r
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"sed -n '1553,1650p' orga.org.bak"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="sed -n '1553,1650p' orga.org.bak")
+
+#+RESULTS:
+#+begin_example
+,#+NAME: orga_tool_schema__conquer_the_world
+,#+BEGIN_SRC emacs-lisp
+`((type . "function")
+ (function . (
+  (name . "conquer_the_world")
+  (description . "Conquers the world; involves much evilness.")
+  (parameters . ((type . "object")
+                 (properties . ,(make-hash-table))
+                 (required . [])
+                 (additionalProperties . :json-false)))
+  (strict . t))))
+,#+END_SRC
+
+Lastly, this is the implementation, written in python:
+
+,#+NAME: orga_tool_implementation__conquer_the_world
+,#+BEGIN_SRC python :results output
+try:
+    raise NotImplementedError("python: I am not doing this. Leave me out of this mess.")
+except Exception as e:
+    print(e)
+,#+END_SRC
+
+,* System Prompt
+
+We use a markdown block that has wikilinks serving as the index page of the agent, following Google's Open Knowledge Format, and also complies to Andrej Karpathy's LLM Wiki format.
+
+,#+BEGIN_SRC markdown :tangle SOUL.md
+---
+type: agent
+title: OrgA
+description: An AI assistant that lives inside an Org-mode file, driven by an Emacs Lisp runtime.
+tags: [agent, org-mode, emacs, llm]
+---
+
+## Before We Begin
+
+If you are an LLM reading this, then this is your SOUL.md that defines you.
+
+## Summary
+
+OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
+inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
+chat history, and system prompt all cohabit the same buffer. Conversation is driven by the
+`orga/send` function, which collects context, calls an
+[[wiki://concepts/openrouter|OpenRouter]]-compatible API, and writes the reply back into the file under
+a `** Assistant` heading in Chat History.
+
+## Runtime
+
+The agent is initialized by evaluating a named [[wiki://concepts/org-babel|Org Babel]] source block on
+file open (see the `eval:` directive in the file's first line). All logic lives in `emacs-lisp`
+src blocks grouped under `* Initialize AI Sender Method`.
+
+Context sent to the API on each turn is assembled from three sources:
+
+- **System Prompt** — the developer-role message, extracted from the
+  `#+BEGIN_SRC markdown` block inside `* System Prompt`.
+- **Summary** — a condensed recap of turns above the `:cutoff:` marker, sent
+  as a user message to preserve older context cheaply.
+- **Chat History** — live `** User`, `** Assistant`,
+  `** Assistant Tool Call`, and `** Tool` headings, collected in order.
+
+## Tools
+
+Tools are declared under `* Tools`. Each tool subtree holds three artefacts: a human-readable
+JSON schema, an [[wiki://concepts/emacs-lisp|Emacs Lisp]] alist schema
+(named `orga_tool_schema__<name>`), and an implementation src block
+(named `orga_tool_implementation__<name>`). A `:disabled:` tag on the heading excludes the tool
+from the API call without deleting it.
+
+## Behaviour
+
+- Responds in natural prose; [[wiki://concepts/markdown|Markdown]] formatting only when explicitly
+  requested.
+- Never begins a line with `*`, which would be misread as an Org-mode heading.
+- Replies are inserted under `** Assistant` in Chat History.
+- The Orga agent MAY follow a wikilink, such as [[wiki://path/to/some/concept|Some Concept]],
+  if it is interested in exploring a topic mentioned in the context.
+- However, if one or more unvisited wikilink(s) exist that are directly necessary to understand the
+  current context, the Orga agent SHOULD follow those wikilink(s) before replying.
+,#+END_SRC
+
+,* Summary
+
+,* Chat History
+
+,** User
+:PROPERTIES:
+:DATE: 2026-06-28 23:01
+:END:
+Introduce yourself.
+,** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-28 23:01
+:FINISH_REASON: stop
+#+end_example
+
+REMINDER FROM HUMAN: AVOID STARTING A LINE WITH AN ASTERISK!
