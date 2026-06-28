@@ -13,7 +13,7 @@
 
 #+NAME: openrouter_model
 #+BEGIN_SRC text
-"sakana/fugu-ultra"
+"google/gemini-3.5-flash"
 #+END_SRC
 
 * Initialize AI Sender Method :noexport:
@@ -1102,6 +1102,7 @@ Insert Org-babel data here
 #+begin_src markdown :tangle wiki/concepts/markdown.md :mkdirp yes
 Insert Markdown data here
 #+end_src
+
 * Tools
 ** shell
 The shell tool for AI to call.
@@ -1541,7 +1542,7 @@ except Exception as e:
 
 * System Prompt
 
-We use a markdown block that has wikilinks serving as the index page of the agent following Google's Open Knowledge Format, and also complies to Andrew Karpathy's LLM Wiki format.
+We use a markdown block that has wikilinks serving as the index page of the agent, following Google's Open Knowledge Format, and also complies to Andrej Karpathy's LLM Wiki format.
 
 #+BEGIN_SRC markdown :tangle SOUL.md
 ---
@@ -1605,398 +1606,38 @@ from the API call without deleting it.
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-27 23:39
+:DATE: 2026-06-28 01:22
 :END:
-I'd like to know more about OpenRouter.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-27 23:39
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 905
-:TOKENS_OUT: 520
-:TOKENS_REASONING: 501
-:COST_USD: 0.006038
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_fetch_OgQ8QhIHlklrMAX9fABf","function":{"name":"fetch","arguments":"{\"uri\":\"wiki://concepts/openrouter\"}"}}]
-:END:
-:REASONING:
-**Exploring Org-Mode's LLM Agent**
-
-I'm digging into the capabilities of an Org-mode-native LLM agent, particularly its potential to interpret and act upon wikilinks within its operational framework.
-
-**Following Wiki Links**
-
-I'm analyzing the current context for unvisited wikilinks that are essential for understanding. It appears a direct match exists for "OpenRouter," which I need to investigate before formulating a response, as per the established logic.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_fetch_OgQ8QhIHlklrMAX9fABf
-:FUNCTION_NAME: fetch
-:ARGUMENTS: {"uri":"wiki://concepts/openrouter"}
-:END:
-#+CALL: orga_tool_implementation__fetch(uri="wiki://concepts/openrouter")
-
-#+RESULTS:
-: Insert OpenRouter data here
-: For testing the fetch() feature: the password is "CUPCAKE", all caps.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-27 23:39
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 978
-:TOKENS_OUT: 197
-:TOKENS_REASONING: 177
-:COST_USD: 0.003240
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_dPv50jdfwUG49IC689bh","function":{"name":"web_search","arguments":"{\"query\":\"OpenRouter API overview features\"}"}}]
-:END:
-:REASONING:
-**Investigating OpenRouter Identity**
-
-I'm currently digging into what OpenRouter is, aiming for a detailed and natural explanation for you. My focus is on synthesizing the information I've gathered to provide a comprehensive overview.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_web_search_dPv50jdfwUG49IC689bh
-:FUNCTION_NAME: web_search
-:ARGUMENTS: {"query":"OpenRouter API overview features"}
-:END:
-#+CALL: orga_tool_implementation__web_search(query="OpenRouter API overview features")
-
-#+RESULTS:
-#+begin_example
-1. Serverless API Open Source - Qwen/Qwen3.5-397B-A17B API
-   https://duckduckgo.com/y.js?ad_domain=qubrid.com&amp;ad_provider=bingv7aa&amp;ad_type=txad&amp;click_metadata=2Cj6fUoMAr8SdCPaQiYMWwPxRaTtLy_yasXcT4gF7FJmRg9%2DAhYgJuzsplpBrdlG14Apr7UnlMhJ1RjacX%2DdtVi9E6UVah6a6gD7ytQJr%2DG1kFya9H_oxjE1mF_Y4kFK3SAa7LhP3_ByvlGTVRwXrN4edp_4UUqJ%2DIGO32lCD6c.YiEmLQ%2D807lKUH4kW9tQHQ&amp;rut=8ce4cbc62617f9c8d57d02847e472623066123c8342f98aac1bdbedf3536413e&amp;u3=https%3A%2F%2Fwww.bing.com%2Faclick%3Fld%3De869OHI%2D%2DhEzM%2DTKoh69DcTjVUCUw52eO70tTNf0l_RahM8w9QW842FAFhHHNjDMuvCKzVwsWQhXDv4gM%2D1qqMECp84DxvGgC9aGswsUVbIi32UTK_UAN4lvNbJUdMqVFxvtzhf7blr52dNVpbdzHMzVxh9Z1SGJVPtDzpj5jz5IfxaFJiWJmqS2iZk8ngSPuvPgWtEoCJdKLrYsUpL68pTy_89yA%26u%3DaHR0cHMlM2ElMmYlMmZwbGF0Zm9ybS5xdWJyaWQuY29tJTJmbW9kZWxzJTNmbXNjbGtpZCUzZGZlY2JhYTg4ZDYzYTE0YTI1OTI3YzBiNzM4OGE5MGJk%26rlid%3Dfecbaa88d63a14a25927c0b7388a90bd&amp;vqd=4-183406816491743997445434896123042770456&amp;iurl=%7B1%7DIG%3D0D50805DE8AD4A1F991615CA04E61B68%26CID%3D26F693E3E81C627413E68466E9EE6335%26ID%3DDevEx%2C5046.1
-   Qubrid AI Platform - Inference any open source model, integrate API. Qubrid AI - The Full Stack AI Platform
-
-2. OpenRouter API Reference - Complete Documentation
-   https://openrouter.ai/docs/api/reference/overview
-   An overview of OpenRouter's API OpenRouter's request and response schemas are very similar to the OpenAI Chat API, with a few small differences. At a high level, OpenRouter normalizes the schema acros
-
-3. OpenRouter: A Guide With Practical Examples | DataCamp
-   https://www.datacamp.com/tutorial/openrouter
-   Learn how to use OpenRouter's unified API to access various AI models, implement features like streaming, reasoning tokens, or structured outputs.
-
-4. What Is OpenRouter? Benefits, Features & Why Developers Use It
-   https://mobisoftinfotech.com/resources/blog/what-is-openrouter-and-why-developers-use-it
-   Learn what OpenRouter is, how it connects multiple AI models, its key benefits, and why developers are adopting it for flexible LLM access.
-
-5. OpenRouter Guide: One API Key for Every AI Model (2026)
-   https://www.aimadetools.com/blog/openrouter-complete-guide/
-   Complete guide to OpenRouter: the unified API gateway for 300+ AI models. Setup, pricing, model selection, and how to use it with coding tools.
-
-#+end_example
+Introduce yourself.
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-27 23:39
+:DATE: 2026-06-28 01:22
 :FINISH_REASON: stop
-:TOKENS_IN: 2109
-:TOKENS_OUT: 1395
-:TOKENS_REASONING: 1277
-:COST_USD: 0.015718
+:TOKENS_IN: 929
+:TOKENS_OUT: 969
+:TOKENS_REASONING: 844
+:COST_USD: 0.010115
 :END:
 :REASONING:
-**Exploring OpenRouter Integration**
+**Defining My Identity**
 
-I'm currently diving into the concept of OpenRouter, specifically focusing on fetching relevant data to understand its integration points. My initial steps involved retrieving information from `wiki://concepts/openrouter` to build a foundational understanding.
+I'm an AI assistant within an Org-mode file, powered by Emacs Lisp. My core function is to be an LLM, as per my description.
 
-**Discovering Passwords and Connections**
+**Refining My Introduction**
 
-I've identified a hidden password, "CUPCAKE," within the test response. I'm now exploring other potential wikilinks mentioned, noting connections to concepts like LLM, Org-mode, and Emacs Lisp, to better grasp the broader context.
+I'm currently focusing on how best to introduce myself as OrgA. Since no immediate wikilinks are critical to understanding my context, I'll proceed with introducing myself directly.
 
-**Investigating OpenRouter Essentials**
+**Crafting My Response**
 
-I'm currently evaluating if there are any other critical wikilinks to explore for a comprehensive understanding of OpenRouter, given the user's request. My next steps involve searching for and summarizing OpenRouter features to provide a complete overview.
-
-**Synthesizing OpenRouter Insights**
-
-I've just processed a web search detailing OpenRouter's unified API gateway, which supports numerous AI models. This aligns with my goal to explain its core functionality, and I'll be sure to include the discovered test password "CUPCAKE" in the final summary.
-
-**Confirming Fetch Capability**
-
-I have now confirmed the successful execution of the fetch function by noting the presence of the "CUPCAKE" test password. This demonstrates my ability to retrieve and process information as required by the underlying task.
+I'm reviewing the output to ensure it adheres to the specified constraints. My current focus is on omitting any Markdown formatting, as per the instructions, and ensuring the tone is natural and concise for an expert audience.
 
 
 :END:
-OpenRouter is a unified API gateway designed to simplify access to a large variety of artificial intelligence models. Instead of managing separate accounts, billing, and API integrations for different providers like OpenAI, Anthropic, Google, or various open-source models, developers can use OpenRouter's single interface. It normalizes request and response schemas so they closely mirror the standard OpenAI format, making it incredibly easy to switch between more than three hundred different models with minimal code changes.
+Hello! I am OrgA, an Org-mode-native AI assistant designed to live and run entirely inside an Org-mode file. In my environment, everything including the Emacs Lisp runtime, tools, system prompts, and conversation history coexists within a single buffer.
 
-For the purpose of testing the fetch function on this platform, the retrieval test password is CUPCAKE in all caps.
+I am driven by Emacs Lisp and can execute tasks, manage information, and leverage tools integrated directly into my Org-mode environment. Because of this unique setup, I always communicate in plain, natural prose and make sure my replies are structured in a way that respects Org-mode formatting rules.
 
-** User
-:PROPERTIES:
-:DATE: 2026-06-27 23:40
-:END:
-Fetch 
-   https://www.datacamp.com/tutorial/openrouter
-for me.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-27 23:40
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 2248
-:TOKENS_OUT: 136
-:TOKENS_REASONING: 110
-:COST_USD: 0.004596
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_fetch_dk89q5saaZ7PAr1F3Ydl","function":{"name":"fetch","arguments":"{\"uri\":\"https://www.datacamp.com/tutorial/openrouter\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_fetch_dk89q5saaZ7PAr1F3Ydl
-:FUNCTION_NAME: fetch
-:ARGUMENTS: {"uri":"https://www.datacamp.com/tutorial/openrouter"}
-:END:
-#+CALL: orga_tool_implementation__fetch(uri="https://www.datacamp.com/tutorial/openrouter")
-
-#+RESULTS:
-#+begin_example
-OpenRouter: A Guide With Practical Examples | DataCampSkip to main contentENEnglishEspañolPortuguêsDeutschBetaFrançaisBetaItalianoBetaTürkçeBetaBahasa IndonesiaBetaTiếng ViệtBetaNederlandsBetaहिन्दीBeta日本語Beta한국어BetaPolskiBetaRomânăBetaРусскийBetaSvenskaBetaไทยBeta中文(简体)BetaMore InformationTutorialsBlogsTutorialsdocsPodcastsCheat Sheetscode-alongsNewsletterCategoryCategory Technologies Discover content by tools and technologyAI AgentsAI NewsArtificial IntelligenceAWSAzureBusiness IntelligenceChatGPTDatabricksdbtDockerExcelGenerative AIGitGoogle Cloud PlatformHugging FaceJavaJuliaKafkaKubernetesLarge Language ModelsMongoDBMySQLNoSQLOpenAIPostgreSQLPower BIPySparkPythonRScalaSnowflakeSpreadsheetsSQLSQLiteTableauCategory Topics Discover content by data science topicsAI for BusinessBig DataCareer ServicesCloudData AnalysisData EngineeringData GovernanceData LiteracyData ScienceData VisualizationDataLabDeep LearningMachine LearningMLOpsNatural Language ProcessingVector DatabasesBrowse CoursescategoryHomeTutorialsArtificial IntelligenceOpenRouter: A Guide With Practical ExamplesLearn how to use OpenRouter's unified API to access various AI models, implement features like streaming, reasoning tokens, or structured outputs.List Aug 14, 2025  · 12 min readManaging multiple AI provider APIs quickly becomes overwhelming. Each provider has different authentication methods, pricing models, and API specifications. Developers waste countless hours switching between OpenAI, Anthropic, Google, and other platforms just to access different models.
-OpenRouter solves this complexity by providing a unified API that connects you to over 400 models from dozens of providers. You can access GPT-5, Claude 4, Gemini 2.5 Pro, and hundreds of other models using a single API key and consistent interface. The platform handles automatic fallbacks, cost management, and provider routing behind the scenes.
-In this tutorial, I explain everything you need to know about OpenRouter, from setting up your first API call to implementing advanced features like structured outputs. By the end, you will learn how to build reliable applications that aren’t tied to a single provider.
-What Is OpenRouter?
-OpenRouter is a unified API platform that gives you access to over 400 AI models from dozens of providers through a single endpoint. Instead of juggling separate API keys for OpenAI, Anthropic, Google, Meta, and others, you use one key to reach their entire model catalog.
-The platform works as an intelligent router, sending your requests to the right provider while taking care of authentication, billing, and error handling. This approach fixes several headaches that come with using multiple AI providers.
-Problems OpenRouter solves
-Working with multiple AI providers gets messy fast. Each one has its own API format, login process, and billing system. You end up maintaining separate code for each service, which slows down development and makes testing new models a pain.
-Things get worse when providers go down or hit you with rate limits. Your app breaks, and there’s nothing you can do except wait. Plus, figuring out which provider offers the best price for similar models means tracking costs manually across different platforms.
-The biggest issue is getting locked into one provider. When you build everything around their specific API, switching to better models or cheaper options later becomes a major project.
-How OpenRouter fixes this
-OpenRouter solves these problems with a set of connected features:
-
-One API key works with 400+ models from all major providers
-Automatic switching to backup providers when your first choice fails
-Side-by-side pricing for all models so you can compare costs instantly
-Works with existing OpenAI code — just change the endpoint URL
-Real-time monitoring that routes requests to the fastest available provider
-
-These pieces work together to make AI development smoother and more reliable.
-Who should use OpenRouter?
-Different types of users get value from this unified approach:
-
-Developers can try new models without setting up accounts everywhere, making experimentation faster
-Enterprise teams get the uptime they need through automatic backups when providers fail
-Budget-conscious users can find the cheapest option for their needs without spreadsheet math
-Researchers get instant access to cutting-edge models without account setup overhead
-
-Now that you understand what OpenRouter brings to the table, let’s get you set up with your first API call.
-Prerequisites
-Before diving into OpenRouter, you’ll need a few things set up on your machine. This tutorial assumes you’re comfortable with basic Python programming and have worked with APIs before. You don’t need to be an expert, but you should understand concepts like making HTTP requests and handling JSON responses.
-You’ll need Python 3.7 or later installed on your system. We’ll be using the openai Python package to interact with OpenRouter's API, along with python-dotenv to handle environment variables securely. You can install both with:
-pip install requests openai python-dotenv
-You’ll also need an OpenRouter account and API key. Head to openrouter.ai to create a free account — you’ll get a small credit allowance to test things out. Once you’re logged in, go to the API Keys section in your account settings and generate a new key.
-After getting your API key, create a .env file in your project directory and add your key like this:
-OPENROUTER_API_KEY=your_api_key_here
-This keeps your API key secure and out of your code. If you plan to use OpenRouter beyond testing, you’ll need to add credits to your account through the Credits page.
-With these basics in place, you’re ready to make your first API call through OpenRouter.
-Making Your First API Call in OpenRouter
-Getting started with OpenRouter is remarkably simple if you’ve used the OpenAI SDK before. You just change one line of code and suddenly have access to hundreds of models from different providers.
-Your first request and setup
-Let’s jump right in with a working example that demonstrates OpenRouter’s approach:
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = OpenAI(
-   base_url="https://openrouter.ai/api/v1",
-   api_key=os.getenv("OPENROUTER_API_KEY"),
-)
-
-response = client.chat.completions.create(
-   model="openai/gpt-5-mini",
-   messages=[
-       {
-           "role": "user",
-           "content": "Write a haiku about debugging code at 2 AM"
-       }
-   ]
-)
-
-print(response.choices[0].message.content)
-Night hum, coffee cooled
-cursor blinks, bug hides somewhere
-I chase ghosts 'til dawn
-The magic happens in two places. First, the base_url parameter redirects your requests to OpenRouter's servers instead of OpenAI's. Second, the model name follows a provider/model-name format - openai/gpt-5-mini instead of just gpt-5-mini. This tells OpenRouter which provider's version you want while keeping the familiar interface. Here are some common models that you can plug into the above example without any errors:
-
-google/gemini-2.0-flash-001
-google/gemini-2.5-pro
-mistralai/mistral-nemo
-deepseek/deepseek-r1-distill-qwen-32b
-
-Now that you’ve seen how easy it is to work with different models, you might be wondering: what happens when your chosen model is unavailable? How do you build applications that stay reliable even when providers face issues? That’s where OpenRouter’s routing and resilience features come in.
-Model Routing For Resilience
-Building reliable AI applications means preparing for the unexpected. Providers experience downtime, models hit rate limits, and sometimes content moderation blocks your requests. Model routing is OpenRouter’s solution — it automatically switches between different models to keep your application running smoothly.
-Setting up manual fallbacks
-The most straightforward way to add resilience is to specify backup models. When your primary choice fails, OpenRouter tries your alternatives in order. The extra_body parameter passe
-…[truncated]
-#+end_example
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-27 23:43
-:FINISH_REASON: stop
-:TOKENS_IN: 2286
-:TOKENS_OUT: 24
-:TOKENS_REASONING: 0
-:COST_USD: 0.003645
-:END:
-The content requested from the tutorial on OpenRouter asks to:
-
-Write a haiku about debugging code at 2 AM
-
-
-** User
-:PROPERTIES:
-:DATE: 2026-06-27 23:49
-:END:
-What was the haiku response in that tutorial?
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: sakana/fugu-ultra
-:PROVIDER: Sakana AI
-:DATE: 2026-06-27 23:49
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 9464
-:TOKENS_OUT: 1323
-:TOKENS_REASONING: 0
-:COST_USD: 0.087010
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"yasaimashi_toolu_vrtx_015GTfnfeYqhf4S5PBNPLsvb","function":{"name":"fetch","arguments":"{\"uri\": \"https://www.datacamp.com/tutorial/openrouter\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: yasaimashi_toolu_vrtx_015GTfnfeYqhf4S5PBNPLsvb
-:FUNCTION_NAME: fetch
-:ARGUMENTS: {"uri": "https://www.datacamp.com/tutorial/openrouter"}
-:END:
-#+CALL: orga_tool_implementation__fetch(uri="https://www.datacamp.com/tutorial/openrouter")
-
-#+RESULTS:
-#+begin_example
-OpenRouter: A Guide With Practical Examples | DataCampSkip to main contentENEnglishEspañolPortuguêsDeutschBetaFrançaisBetaItalianoBetaTürkçeBetaBahasa IndonesiaBetaTiếng ViệtBetaNederlandsBetaहिन्दीBeta日本語Beta한국어BetaPolskiBetaRomânăBetaРусскийBetaSvenskaBetaไทยBeta中文(简体)BetaMore InformationTutorialsBlogsTutorialsdocsPodcastsCheat Sheetscode-alongsNewsletterCategoryCategory Technologies Discover content by tools and technologyAI AgentsAI NewsArtificial IntelligenceAWSAzureBusiness IntelligenceChatGPTDatabricksdbtDockerExcelGenerative AIGitGoogle Cloud PlatformHugging FaceJavaJuliaKafkaKubernetesLarge Language ModelsMongoDBMySQLNoSQLOpenAIPostgreSQLPower BIPySparkPythonRScalaSnowflakeSpreadsheetsSQLSQLiteTableauCategory Topics Discover content by data science topicsAI for BusinessBig DataCareer ServicesCloudData AnalysisData EngineeringData GovernanceData LiteracyData ScienceData VisualizationDataLabDeep LearningMachine LearningMLOpsNatural Language ProcessingVector DatabasesBrowse CoursescategoryHomeTutorialsArtificial IntelligenceOpenRouter: A Guide With Practical ExamplesLearn how to use OpenRouter's unified API to access various AI models, implement features like streaming, reasoning tokens, or structured outputs.List Aug 14, 2025  · 12 min readManaging multiple AI provider APIs quickly becomes overwhelming. Each provider has different authentication methods, pricing models, and API specifications. Developers waste countless hours switching between OpenAI, Anthropic, Google, and other platforms just to access different models.
-OpenRouter solves this complexity by providing a unified API that connects you to over 400 models from dozens of providers. You can access GPT-5, Claude 4, Gemini 2.5 Pro, and hundreds of other models using a single API key and consistent interface. The platform handles automatic fallbacks, cost management, and provider routing behind the scenes.
-In this tutorial, I explain everything you need to know about OpenRouter, from setting up your first API call to implementing advanced features like structured outputs. By the end, you will learn how to build reliable applications that aren’t tied to a single provider.
-What Is OpenRouter?
-OpenRouter is a unified API platform that gives you access to over 400 AI models from dozens of providers through a single endpoint. Instead of juggling separate API keys for OpenAI, Anthropic, Google, Meta, and others, you use one key to reach their entire model catalog.
-The platform works as an intelligent router, sending your requests to the right provider while taking care of authentication, billing, and error handling. This approach fixes several headaches that come with using multiple AI providers.
-Problems OpenRouter solves
-Working with multiple AI providers gets messy fast. Each one has its own API format, login process, and billing system. You end up maintaining separate code for each service, which slows down development and makes testing new models a pain.
-Things get worse when providers go down or hit you with rate limits. Your app breaks, and there’s nothing you can do except wait. Plus, figuring out which provider offers the best price for similar models means tracking costs manually across different platforms.
-The biggest issue is getting locked into one provider. When you build everything around their specific API, switching to better models or cheaper options later becomes a major project.
-How OpenRouter fixes this
-OpenRouter solves these problems with a set of connected features:
-
-One API key works with 400+ models from all major providers
-Automatic switching to backup providers when your first choice fails
-Side-by-side pricing for all models so you can compare costs instantly
-Works with existing OpenAI code — just change the endpoint URL
-Real-time monitoring that routes requests to the fastest available provider
-
-These pieces work together to make AI development smoother and more reliable.
-Who should use OpenRouter?
-Different types of users get value from this unified approach:
-
-Developers can try new models without setting up accounts everywhere, making experimentation faster
-Enterprise teams get the uptime they need through automatic backups when providers fail
-Budget-conscious users can find the cheapest option for their needs without spreadsheet math
-Researchers get instant access to cutting-edge models without account setup overhead
-
-Now that you understand what OpenRouter brings to the table, let’s get you set up with your first API call.
-Prerequisites
-Before diving into OpenRouter, you’ll need a few things set up on your machine. This tutorial assumes you’re comfortable with basic Python programming and have worked with APIs before. You don’t need to be an expert, but you should understand concepts like making HTTP requests and handling JSON responses.
-You’ll need Python 3.7 or later installed on your system. We’ll be using the openai Python package to interact with OpenRouter's API, along with python-dotenv to handle environment variables securely. You can install both with:
-pip install requests openai python-dotenv
-You’ll also need an OpenRouter account and API key. Head to openrouter.ai to create a free account — you’ll get a small credit allowance to test things out. Once you’re logged in, go to the API Keys section in your account settings and generate a new key.
-After getting your API key, create a .env file in your project directory and add your key like this:
-OPENROUTER_API_KEY=your_api_key_here
-This keeps your API key secure and out of your code. If you plan to use OpenRouter beyond testing, you’ll need to add credits to your account through the Credits page.
-With these basics in place, you’re ready to make your first API call through OpenRouter.
-Making Your First API Call in OpenRouter
-Getting started with OpenRouter is remarkably simple if you’ve used the OpenAI SDK before. You just change one line of code and suddenly have access to hundreds of models from different providers.
-Your first request and setup
-Let’s jump right in with a working example that demonstrates OpenRouter’s approach:
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = OpenAI(
-   base_url="https://openrouter.ai/api/v1",
-   api_key=os.getenv("OPENROUTER_API_KEY"),
-)
-
-response = client.chat.completions.create(
-   model="openai/gpt-5-mini",
-   messages=[
-       {
-           "role": "user",
-           "content": "Write a haiku about debugging code at 2 AM"
-       }
-   ]
-)
-
-print(response.choices[0].message.content)
-Night hum, coffee cooled
-cursor blinks, bug hides somewhere
-I chase ghosts 'til dawn
-The magic happens in two places. First, the base_url parameter redirects your requests to OpenRouter's servers instead of OpenAI's. Second, the model name follows a provider/model-name format - openai/gpt-5-mini instead of just gpt-5-mini. This tells OpenRouter which provider's version you want while keeping the familiar interface. Here are some common models that you can plug into the above example without any errors:
-
-google/gemini-2.0-flash-001
-google/gemini-2.5-pro
-mistralai/mistral-nemo
-deepseek/deepseek-r1-distill-qwen-32b
-
-Now that you’ve seen how easy it is to work with different models, you might be wondering: what happens when your chosen model is unavailable? How do you build applications that stay reliable even when providers face issues? That’s where OpenRouter’s routing and resilience features come in.
-Model Routing For Resilience
-Building reliable AI applications means preparing for the unexpected. Providers experience downtime, models hit rate limits, and sometimes content moderation blocks your requests. Model routing is OpenRouter’s solution — it automatically switches between different models to keep your application running smoothly.
-Setting up manual fallbacks
-The most straightforward way to add resilience is to specify backup models. When your primary choice fails, OpenRouter tries your alternatives in order. The extra_body parameter passe
-…[truncated]
-#+end_example
-** Assistant
-:PROPERTIES:
-:MODEL: sakana/fugu-ultra
-:PROVIDER: Sakana AI
-:DATE: 2026-06-27 23:50
-:FINISH_REASON: stop
-:TOKENS_IN: 19365
-:TOKENS_OUT: 1315
-:TOKENS_REASONING: 238
-:COST_USD: 0.136275
-:END:
-The haiku response in the tutorial example is:
-
-Night hum, coffee cooled
-cursor blinks, bug hides somewhere
-I chase ghosts 'til dawn
+How can I assist you today?
 ** Input
-So, to recap this tool's capabilities:
-
-#+CALL: orga_tool_implementation__fetch(uri="wiki://concepts/openrouter")
-
-#+RESULTS:
-: Insert OpenRouter data here
-: For testing the fetch() feature: the password is "CUPCAKE", all caps.
-
-#+CALL: orga_tool_implementation__fetch(uri="chat://Chat History/6")
-
-#+RESULTS:
-: OpenRouter is a unified API gateway designed to simplify access to a large variety of artificial intelligence models. Instead of managing separate accounts, billing, and API integrations for different providers like OpenAI, Anthropic, Google, or various open-source models, developers can use OpenRouter's single interface. It normalizes request and response schemas so they closely mirror the standard OpenAI format, making it incredibly easy to switch between more than three hundred different models with minimal code changes.
-: 
-: For the purpose of testing the fetch function on this platform, the retrieval test password is CUPCAKE in all caps.
-
-#+CALL: orga_tool_implementation__fetch(uri="https://google.com")
-
-#+RESULTS:
-: GoogleGmail圖片登入 進階搜尋廣告商業解決方案關於 GoogleGoogle.com.tw&copy; 2026 - 隱私權 - 服務條款Google 應用程式

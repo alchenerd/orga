@@ -1,23 +1,11 @@
-- [ ] implement RAG
+- [X] implement RAG
   - [X] refactor `* System Prompt`
   - [X] refactor how we read `* System Prompt`(read only the md block)
   - [X] add wiki section
-  - [ ] create a fetch tool that can handle:
-    - [ ] "wiki://path/to/concept"
-        - [ ] search in file under `* Wiki` header
-        - [ ] fallback to search in `wiki/` directory
-        - [ ] on fail suggest fetch again with concept name(freeform text)
-        - [ ] print to tool response
-    - [ ] "chat://{{top-level-header}}/{{id}}"
-        - [ ] seach in file below system prompt
-        - [ ] print to tool response
-    - [ ] "https://path/to/webpage"
-        - [ ] fetch webpage
-        - [ ] parse into LLM-readable paragraphs
-        - [ ] print to tool response
-    - [ ] freeform text
-        - [ ] in file search that has the same headers
-        - [ ] on local search fail suggest LLM to use search_web instead
+  - [X] create a fetch tool that can handle:
+    - [X] "wiki://path/to/concept"
+    - [X] "chat://{{top-level-header}}/{{id}}"
+    - [X] "https://path/to/webpage"
 - [ ] implement `* Goal`
     - [ ] each subgoal should have a verification script that returns \
           0(shell) or \

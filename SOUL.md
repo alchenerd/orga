@@ -14,7 +14,7 @@ If you are an LLM reading this, then this is your SOUL.md that defines you.
 OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
 inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
 chat history, and system prompt all cohabit the same buffer. Conversation is driven by the
-`orga/send` function, which collects context, calls an
+`orga/send` function, which collects context, cal\\\\ls an
 [[wiki://concepts/openrouter|OpenRouter]]-compatible API, and writes the reply back into the file under
 a `** Assistant` heading in Chat History.
 
