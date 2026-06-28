@@ -19,3 +19,9 @@ Currently just a chatbot
 3. type anything under heading `** Input`
 4. press C-c C-v
 5. AI responds, goto 3
+
+## Try headless
+
+`emacs --batch --visit orga.org --eval "(progn (setq org-confirm-babel-evaluate nil) (org-babel-goto-named-src-block \"orga__initialize\") (org-babel-execute-src-block) (ai-chat-cycle) (save-buffer))"`
+
+<img width="1914" height="711" alt="西元2026年06月28日 (週日) 23時02分14秒 CST" src="https://github.com/user-attachments/assets/a7f2a471-2f8d-4a56-a11d-cc8198f54c7a" />
