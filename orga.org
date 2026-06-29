@@ -2254,5 +2254,60 @@ Introduce yourself.
 :DATE: 2026-06-28 23:01
 :FINISH_REASON: stop
 #+end_example
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 01:29
+:FINISH_REASON: stop
+:TOKENS_IN: 6554
+:TOKENS_OUT: 1555
+:TOKENS_REASONING: 785
+:COST_USD: 0.018516
+:END:
+:REASONING:
+**Investigating Initialization Blocks**
 
-REMINDER FROM HUMAN: AVOID STARTING A LINE WITH AN ASTERISK!
+I've been examining the `orga.org.bak` file. My current focus is on understanding my creation by inspecting initialization blocks and top-level headers, utilizing commands like `head` and `grep` to pinpoint relevant sections.
+
+**Analyzing Core Initialization**
+
+I'm delving into the `orga_core__cycle-driver` section and the subsequent schema/implementation details for `conquer_the_world`. This is crucial for understanding the main loop and how it orchestrates the collection, assembly, and execution of requests.
+
+
+:END:
+By looking at `orga.org.bak`, I can see exactly how I am put together! I am built as a fully self-contained AI agent operating inside an Org-mode file. 
+
+My design consists of several core components working in harmony:
+
+### 1. Bootstrapping with Org-Babel
+The very first line of my file contains a file-local Emacs variable with an `eval` directive:
+`-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-`
+
+When the file is opened in Emacs, this automatically runs the `orga__initialize` source block. This block assembles all the core Lisp libraries written in my other headers, compiles them, and binds the driver command `ai-chat-cycle` to the key combination `C-c C-v`.
+
+### 2. The Cycle Driver (`ai-chat-cycle`)
+The heartbeat of my operation is the driver loop. It orchestrates a pipeline that moves through:
+- **Collect**: Gathers the system prompt, any cheap summary of older history, and active chat headers.
+- **Assemble**: Generates the message payload for the OpenRouter API.
+- **Send**: Performs the network call to the LLM using a model specified under my configurations (e.g., `google/gemini-3.5-flash`).
+- **Parse & Commit**: Decodes the response, writing assistant text blocks or structured tool calls directly into the buffer.
+- **Yield**: If a tool was suggested, it automatically executes the block via Org-Babel or leaves a spot for manual input, then appends a new `** Input` heading for user replies.
+
+The cycle operates in two main modes:
+- **Normal Mode**: Triggers when you write under a `** Input` header. The driver converts your input to a dated `** User` heading, requests a response, inserts the `** Assistant` heading, and then appends a fresh `** Input` block at the bottom of the file.
+- **Tool-Result Mode**: Triggers when there are pending shell, search, or fetch tools that need to return their output back to the LLM.
+
+### 3. Integrated Tools
+Tools are declared locally within the file structure. Each tool is described by three items under its subtree:
+- A human-readable JSON schema.
+- An Emacs Lisp alist schema (e.g., `orga_tool_schema__execute_shell_command`).
+- An implementation source block (e.g., `orga_tool_implementation__execute_shell_command` which actually executes shell actions).
+
+Interestingly, I also noticed a humorous disabled tool in `orga.org.bak` called `conquer_the_world` whose description is "Conquering the world; involves much evilness." Its implementation is a Python block that raises an error: `"python: I am not doing this. Leave me out of this mess."`
+
+### 4. System Prompt and Persona (`SOUL.md`)
+My identity block is written under `* System Prompt`. This is a rich Markdown structure that doubles as my `SOUL.md` profile. It outlines my behavior guidelines, such as communicating in natural prose, avoiding starting any lines with `*` (which Emacs would misinterpret as a heading), and exploring wiki links.
+
+In short, I am an AI whose entire brain, memory, runtime, and tools reside directly inside the very folder and text file we are interacting with!
+** Input
