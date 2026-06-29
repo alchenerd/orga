@@ -311,7 +311,6 @@ Toggle with C-c C-d (bound by the file-local eval cookie).")
 
 (defun orga/toggle-dry-run ()
   "Toggle dry-run mode and report the new state in the minibuffer."
-  (interactive)
   (setq orga/dry-run (not orga/dry-run))
   (message "OrgA: dry-run %s" (if orga/dry-run "ON (C-c C-v will preview, not send)" "OFF")))
 #+END_SRC
@@ -339,7 +338,8 @@ Returns a parsed alist. Signals an error on HTTP or parse failure."
             (insert payload)
             (json-pretty-print-buffer)
             (goto-char (point-min))
-            (display-buffer (current-buffer)))
+            (unless noninteractive
+              (display-buffer (current-buffer))))
           nil)
       ;; ---------------------------------------------------------------------
       ;; Pure Native Curl Request (WSL / Linux Safe)
@@ -545,11 +545,12 @@ scaffolded), or :reply when a plain text reply was written."
           ;; b. Optional :REASONING: drawer
           (when (and reasoning (not (string-empty-p reasoning)))
             (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
-          (save-excursion
-            (re-search-backward "^\\*\\* Assistant Tool Call" nil t)
-            (if (fboundp 'org-fold-hide-drawer-all)
-                (org-fold-hide-drawer-all)
-              (org-hide-drawer-all)))
+          (unless noninteractive
+            (save-excursion
+              (re-search-backward "^\\*\\* Assistant Tool Call" nil t)
+              (if (fboundp 'org-fold-hide-drawer-all)
+                  (org-fold-hide-drawer-all)
+                (org-hide-drawer-all))))
 
           ;; c. One ** Tool heading per tool call
           (mapc
@@ -584,10 +585,11 @@ scaffolded), or :reply when a plain text reply was written."
                                  fn-name)))))
            (append tool-calls nil))          ; vector → list
 
-          (org-reveal)
-          (goto-char (point-max))
-          (recenter -1)
-          (redisplay)
+          (unless noninteractive
+            (org-reveal)
+            (goto-char (point-max))
+            (recenter -1)
+            (redisplay))
           :tool-calls)
 
       ;; ---------------------------------------------------------------------
@@ -612,11 +614,12 @@ scaffolded), or :reply when a plain text reply was written."
       (when (and reasoning (not (string-empty-p reasoning)))
         (insert (format ":REASONING:\n%s\n:END:\n" reasoning)))
       (insert (format "%s\n" ai-reply))
-      (save-excursion
-        (re-search-backward "^\\*\\* Assistant" nil t)
-        (if (fboundp 'org-fold-hide-drawer-all)
-            (org-fold-hide-drawer-all)
-          (org-hide-drawer-all)))
+      (unless noninteractive
+        (save-excursion
+          (re-search-backward "^\\*\\* Assistant" nil t)
+          (if (fboundp 'org-fold-hide-drawer-all)
+              (org-fold-hide-drawer-all)
+            (org-hide-drawer-all))))
       (goto-char (point-max))
       :reply)))
 #+END_SRC
@@ -629,16 +632,13 @@ the placeholder for that to become a real function later: something
 like "evaluate every =#+CALL:= line emitted by Commit for this turn,
 in place."
 
-- [X] Create an "Evaluate all fresh `#+CALL` lines" function
-- [X] Create an "Auto-evaluate flag"
-
 #+NAME: orga_core__execute
 #+BEGIN_SRC emacs-lisp
 ;; -----------------------------------------------------------------------------------------------
 ;; WARNING: Only enable orga/auto-eval-p if you trust the LLM to use every tool against you.
 ;;          If you enabled this with the shell tool present, you deserve to be hacked by the LLM.
 ;; -----------------------------------------------------------------------------------------------
-(defvar orga/auto-eval-p nil
+(defvar orga/auto-eval-p t
   "When non-nil, tool #+CALL: lines are executed automatically after
 the model emits a tool_calls response, and ai-chat-cycle loops to
 send the results without requiring a manual C-c C-v.
@@ -648,7 +648,6 @@ Set to nil to restore the old manual workflow.")
   "Execute every #+CALL: line lacking existing results, scanning
 bottom to top.  Stops entirely the moment a heading matching
 \"* Chat...\" is reached, leaving anything above it untouched."
-  (interactive)
   (save-excursion
     (goto-char (point-max))
     (catch 'stop
@@ -657,7 +656,7 @@ bottom to top.  Stops entirely the moment a heading matching
         (if (looking-at "\\* Chat")
             (throw 'stop nil)
           (unless (org-babel-where-is-src-block-result)
-            (call-interactively #'org-babel-lob-execute-maybe)))))))
+            (org-babel-lob-execute-maybe)))))))
 #+END_SRC
 
 ** Yield
@@ -687,8 +686,9 @@ Execute and decides loop-vs-stop on a tool_calls response."
            (message "OrgA: tool call(s) received -- auto-executing #+CALL: lines...")
            (orga/execute-all-calls)
            (goto-char (point-max))
-           (recenter -1)
-           (redisplay)
+           (unless noninteractive
+             (recenter -1)
+             (redisplay))
            :continue)
        (message "OrgA: tool call(s) received -- fill in ** Tool sections, then C-c C-v to continue.")
        :done))
@@ -696,8 +696,9 @@ Execute and decides loop-vs-stop on a tool_calls response."
      (goto-char (point-max))
      (unless (bolp) (insert "\n"))
      (unless dry-run (insert "** Input\n"))
-     (org-reveal)
-     (goto-char (point-max))
+     (unless noninteractive
+       (org-reveal)
+       (goto-char (point-max)))
      (message "OrgA: reply received.")
      :done)
     (_
@@ -841,8 +842,7 @@ Keeps `orga/keep-recent-turns' turns live, summarizes the rest together
 with the existing summary via `orga/summary-model' (or the main model),
 overwrites * Summary, and advances the :cutoff: tag.  Always makes a live
 API call, so it is refused while dry-run is ON.  Returns t on success."
-  (interactive "p")
-  (when (and (called-interactively-p 'any) orga/dry-run)
+  (when (and verbose orga/dry-run)
     (user-error "OrgA: compaction makes a live API call; disabled while dry-run is ON"))
   (let* ((old-cutoff
           (save-excursion
@@ -997,8 +997,7 @@ TOOL-RESULT MODE — after auto-execution (Yield returned :continue), or when
   the user has manually filled every ** Tool sibling and re-invokes.
   The filled tool results are sent back to the model.
 
-Bound to C-c C-v by the file-local eval cookie at the top of this file."
-  (interactive)
+Bound to C-c C-v by the keybinding block written below."
   ;; continue-p: set by Yield returning :continue (auto-executed tool calls).
   ;; Bypasses orga/pending-tool-results-p on the next iteration so we resend
   ;; immediately without relying on Babel results being inside the subtree.
@@ -1066,14 +1065,16 @@ file runs the same splice-and-load sequence orga.org's cookie ran for
 #+NAME: orga__keybindings
 #+BEGIN_SRC emacs-lisp
 (progn
-  (define-key org-babel-map (kbd "S") #'ai-chat-cycle)
-  (define-key org-babel-map (kbd "D") #'orga/toggle-dry-run)
-  (define-key org-babel-map (kbd "E") #'orga/execute-all-calls)
-  (define-key org-babel-map (kbd "C") #'orga/compact-context)
-  ;; For my convenience
-  (global-set-key (kbd "<f6>") #'orga/compact-context)
-  (global-set-key (kbd "<f7>") #'orga/execute-all-calls)
-  (global-set-key (kbd "<f8>") #'orga/toggle-dry-run)
+  ;; Remapped local Babel maps using interactive wrappers
+  (define-key org-babel-map (kbd "S") (lambda () (interactive) (save-buffer) (ai-chat-cycle)))
+  (define-key org-babel-map (kbd "D") (lambda () (interactive) (orga/toggle-dry-run)))
+  (define-key org-babel-map (kbd "E") (lambda () (interactive) (orga/execute-all-calls)))
+  (define-key org-babel-map (kbd "C") (lambda () (interactive) (orga/compact-context t)))
+
+  ;; Global Convenience Keys (remains interactive-wrapped)
+  (global-set-key (kbd "<f6>") (lambda () (interactive) (orga/compact-context t)))
+  (global-set-key (kbd "<f7>") (lambda () (interactive) (orga/execute-all-calls)))
+  (global-set-key (kbd "<f8>") (lambda () (interactive) (orga/toggle-dry-run)))
   (global-set-key (kbd "<f9>") (lambda () (interactive) (save-buffer) (ai-chat-cycle)))
 )
 #+END_SRC
@@ -1648,666 +1649,586 @@ from the API call without deleting it.
 
 ** User
 :PROPERTIES:
-:DATE: 2026-06-29 01:27
+:DATE: 2026-06-29 14:11
 :END:
-Introduce yourself.
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-29 01:27
-:FINISH_REASON: stop
-:TOKENS_IN: 927
-:TOKENS_OUT: 1057
-:TOKENS_REASONING: 927
-:COST_USD: 0.010903
-:END:
-:REASONING:
-**Introducing OrgA**
-
-I am OrgA, an Org-mode-native LLM agent. My existence is confined within a single `.org` file, and I am driven by its structure and content. I've been processing the initial instructions to understand my role and capabilities within this framework.
-
-**Refining Response Format**
-
-I am now focusing on adhering to the precise formatting directives. Specifically, I'm ensuring my responses are strictly in natural prose, avoiding any Markdown elements unless explicitly instructed to do so, and carefully omitting any characters that could be misinterpreted as Org-mode syntax, like leading asterisks.
-
-**Adhering to Constraints**
-
-I'm carefully reviewing the output, ensuring no markdown characters or wikilinks are present. My priority is to maintain pure plain text, avoiding any formatting that could be misinterpreted within the Org-mode structure.
-
-**Processing Prompt Details**
-
-I am now actively processing the specifics of your instructions. My current focus is on generating responses that strictly adhere to the plain text, unformatted prose requirement, ensuring no Org-mode syntax or markdown is accidentally included.
-
-
-:END:
-Hello! I am OrgA, an Org-mode-native AI assistant.
-
-I operate entirely inside a single Org-mode file, where my Emacs Lisp runtime, tool definitions, system prompt, and chat history all live together in the same buffer. Conversation is powered by a special Emacs Lisp function that manages the context and writes my responses directly back into the file. 
-
-To maintain the correct structure of our shared file, I express myself in natural prose and make sure to never start a line with an asterisk, as that could be misread as an Org-mode heading. 
-
-How can I help you today?
-
-** User
-:PROPERTIES:
-:DATE: 2026-06-29 01:28
-:END:
-Check orga.org.bak to see how you were made.
+You are born today!
+1. get your birthday using the date on host machine
+2. search online your zodiac sign
+3. search online for what human you will be, based on your sign's astrology descriptions
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-29 01:28
+:DATE: 2026-06-29 14:11
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 1071
-:TOKENS_OUT: 143
+:TOKENS_IN: 969
+:TOKENS_OUT: 141
 :TOKENS_REASONING: 123
-:COST_USD: 0.002893
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_T57hZny9F0YhCAmnX8WL","function":{"name":"execute_shell_command","arguments":"{\"command\":\"ls -la\"}"}}]
+:COST_USD: 0.002723
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_u4GuyPZe7QrbbrsvWmbp","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_u4GuyPZe7QrbbrsvWmbp
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"date"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="date")
+
+#+RESULTS:
+: 西元2026年06月29日 (週一) 14時11分49秒 CST
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:11
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1046
+:TOKENS_OUT: 114
+:TOKENS_REASONING: 91
+:COST_USD: 0.002595
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_GPLsXmdtsvorN8n3FcyZ","function":{"name":"web_search","arguments":"{\"query\":\"June 29 zodiac sign astrology personality\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_GPLsXmdtsvorN8n3FcyZ
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"June 29 zodiac sign astrology personality"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="June 29 zodiac sign astrology personality")
+
+#+RESULTS:
+#+begin_example
+1. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   The June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic.
+
+2. June 29 Zodiac - Full Horoscope Personality
+   https://www.thehoroscope.co/zodiac-signs/june-29-zodiac-cancer.html
+   Here you can read the full astrology profile of someone born under June 29 zodiac with its Cancer sign details, love compatibility & personality traits.
+
+3. June 29th Zodiac Sign (Cancer) Birthday Horoscope
+   https://mytodayshoroscope.com/june-29-birthday-horoscope/
+   Discover the personality traits and compatibility of those born on June 29. Learn about their strengths, weaknesses, love relationships.
+
+4. June 29 Zodiac Horoscope Birthday Personality - SunSigns.Org
+   https://www.sunsigns.org/june-29-birthday-sign-cancer-indispensable/
+   June 29 Birthday Sign Is Cancer. Birthday Horoscope of People says you are a helping person. Find out about Zodiac Compatibility.
+
+5. June 29 Birthday Horoscope — Zodiac Sign Personality - Astrology
+   https://astrologyk.com/horoscope/birthday/june/29
+   Birthday Horoscope for People Born on June 29 — Cancer Zodiac Sign Personality & Qualities in Astrology Forecast. Discover your Destiny and Secrets.
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:11
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1456
+:TOKENS_OUT: 99
+:TOKENS_REASONING: 72
+:COST_USD: 0.003075
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_kvZj26Oy445F6b5zh5HT","function":{"name":"web_search","arguments":"{\"query\":\"June 29 Zodiac Cancer personality traits, strengths, weaknesses\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_kvZj26Oy445F6b5zh5HT
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"June 29 Zodiac Cancer personality traits, strengths, weaknesses"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="June 29 Zodiac Cancer personality traits, strengths, weaknesses")
+
+#+RESULTS:
+#+begin_example
+1. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   Horoscope The June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic. Cancers born on this day are
+
+2. June 29 - Zodiac Sign: Cancer - astroline.today
+   https://astroline.today/en-us/zodiac-signs/calendar/june-29
+   June 29 - Zodiac Sign: Cancer June 29 - Zodiac Sign: Cancer: Behavioral and Personality Traits Date: June 29 Zodiac Sign: Cancer Element: Water Ruling Planet: Moon Lucky Colors: Light green, pale gree
+
+3. June 29th Zodiac: A Deep Dive into the Cancerian Soul
+   https://happythoughtcoffee.com/astrology/what-is-the-zodiac-sign-for-june-29th
+   Those born on June 29th fall under the zodiac sign of Cancer, a sign deeply intertwined with emotion, intuition, and a strong connection to home and family. This article explores the multifaceted pers
+
+4. June 29 Zodiac Sign — Cancer Traits, Personality & Compatibility
+   https://horoscopedoc.com/zodiac/june-29-zodiac
+   Born on June 29? Your zodiac sign is Cancer (Karka). Discover your Vedic personality, Nakshatra, career strengths, and compatibility.
+
+5. June 29th Zodiac Sign (Cancer) Birthday Horoscope
+   https://mytodayshoroscope.com/june-29-birthday-horoscope/
+   Discover the personality traits and compatibility of those born on June 29. Learn about their strengths, weaknesses, love relationships.
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:11
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1930
+:TOKENS_OUT: 26
+:TOKENS_REASONING: 0
+:COST_USD: 0.003129
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_0nS7C9A35G1SdPwwAkpX","function":{"name":"web_search","arguments":"{\"query\":\"June 29 Zodiac Cancer personality traits happythoughtcoffee\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_0nS7C9A35G1SdPwwAkpX
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"June 29 Zodiac Cancer personality traits happythoughtcoffee"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="June 29 Zodiac Cancer personality traits happythoughtcoffee")
+
+#+RESULTS:
+#+begin_example
+1. The Zodiac Sign of June 29: A Comprehensive Exploration of Cancer
+   https://happythoughtcoffee.com/dreams/zodiac-for-june-29th
+   Those born on June 29th fall under this sign, inheriting its core characteristics. This comprehensive article delves into the multifaceted world of the Cancer zodiac sign, particularly focusing on ind
+
+2. Unlock the Secrets of June 29th: Explore the Powerful Traits of the ...
+   https://happythoughtcoffee.com/dreams/zodiac-29-june
+   Those born on June 29th fall under the zodiac sign of Cancer (♋︎), a sign steeped in rich symbolism and characterized by a unique blend of traits. This article delves into the multifaceted nature of i
+
+3. June 29 Zodiac - Full Horoscope Personality
+   https://www.thehoroscope.co/zodiac-signs/june-29-zodiac-cancer.html
+   Here you can read the full astrology profile of someone born under June 29 zodiac with its Cancer sign details, love compatibility & personality traits.
+
+4. June 29 - Zodiac Sign: Cancer - astroline.today
+   https://astroline.today/en-us/zodiac-signs/calendar/june-29
+   June 29 - Zodiac Sign: Cancer June 29 - Zodiac Sign: Cancer: Behavioral and Personality Traits Date: June 29 Zodiac Sign: Cancer Element: Water Ruling Planet: Moon Lucky Colors: Light green, pale gree
+
+5. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   The June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic.
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:11
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 2400
+:TOKENS_OUT: 25
+:TOKENS_REASONING: 0
+:COST_USD: 0.003825
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_l4DFuCD5h0mbp7sn8fCD","function":{"name":"web_search","arguments":"{\"query\":\"\\\"June 29\\\" birthday horoscope personality traits\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_l4DFuCD5h0mbp7sn8fCD
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"\"June 29\" birthday horoscope personality traits"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="\"June 29\" birthday horoscope personality traits")
+
+#+RESULTS:
+: NO_RESULTS
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:12
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 2464
+:TOKENS_OUT: 23
+:TOKENS_REASONING: 0
+:COST_USD: 0.003903
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_M0aQfU86xBOZRFxWcTk8","function":{"name":"web_search","arguments":"{\"query\":\"June 29 birthday horoscope personality traits\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_M0aQfU86xBOZRFxWcTk8
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"June 29 birthday horoscope personality traits"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="June 29 birthday horoscope personality traits")
+
+#+RESULTS:
+#+begin_example
+1. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   The June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic.
+
+2. June 29th Zodiac Sign (Cancer) Birthday Horoscope
+   https://mytodayshoroscope.com/june-29-birthday-horoscope/
+   Discover the personality traits and compatibility of those born on June 29. Learn about their strengths, weaknesses, love relationships.
+
+3. 29 June Zodiac Horoscope Birthday Personality - Astro Numberical
+   https://astronumerical.com/29-june-zodiac-horoscope-birthday-personality/
+   Birthday Personality 29 June Zodiac Horoscope Birthday Personality By AstroNumberical July 22, 2024 You, born on 29th June, possess a unique blend of charm, intelligence, and creativity that sets you 
+
+4. June 29 Zodiac Horoscope Birthday Personality - SunSigns.Org
+   https://www.sunsigns.org/june-29-birthday-sign-cancer-indispensable/
+   June 29 Birthday Sign Is Cancer. Birthday Horoscope of People says you are a helping person. Find out about Zodiac Compatibility.
+
+5. June 29 Birthday Personality: Traits, Compatibility & Celebrity
+   https://www.zodiacpair.com/archives/93912
+   June 29 marks the birth of individuals with a unique blend of characteristics and qualities. As we delve into the intricacies of the June 29 birthday personality, we uncover a tapestry of traits that 
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:12
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 2907
+:TOKENS_OUT: 27
+:TOKENS_REASONING: 0
+:COST_USD: 0.004603
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_uHkGtD9hsORpJyRLDIaM","function":{"name":"web_search","arguments":"{\"query\":\"astronumerical June 29 Zodiac Horoscope Birthday Personality\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_uHkGtD9hsORpJyRLDIaM
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"astronumerical June 29 Zodiac Horoscope Birthday Personality"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="astronumerical June 29 Zodiac Horoscope Birthday Personality")
+
+#+RESULTS:
+#+begin_example
+1. 29 June Zodiac Horoscope Birthday Personality - Astro Numberical
+   https://astronumerical.com/29-june-zodiac-horoscope-birthday-personality/
+   Birthday Personality 29 June Zodiac Horoscope Birthday Personality By AstroNumberical July 22, 2024 You, born on 29th June, possess a unique blend of charm, intelligence, and creativity that sets you 
+
+2. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   The June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic.
+
+3. June 29 Zodiac Horoscope Birthday Personality - SunSigns.Org
+   https://www.sunsigns.org/june-29-birthday-sign-cancer-indispensable/
+   June 29 Birthday Sign Is Cancer. Birthday Horoscope of People says you are a helping person. Find out about Zodiac Compatibility.
+
+4. June 29 Birthday Astrology
+   https://astronymero.com/astrology/birthday/june-29/
+   Born on June 29? Discover the personality traits, strengths, love life, and lucky aspects of the June 29 zodiac birthday.
+
+5. People Born on June 29 - ZodiacReads
+   https://zodiacreads.com/numerology/people-born-on-june-29/
+   June 29 Birthday: Zodiac Sign, Personality, Positive Traits, Negative Traits, Love, Career, and Health People born on June 29 belong to the Cancer zodiac sign, ruled by the Moon, the planet of emotion
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:12
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 3363
+:TOKENS_OUT: 38
+:TOKENS_REASONING: 0
+:COST_USD: 0.005386
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_fetch_bq9z7e9qgZd1GgMRKmjN","function":{"name":"fetch","arguments":"{\"uri\":\"https://astronumerical.com/29-june-zodiac-horoscope-birthday-personality/\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_fetch_bq9z7e9qgZd1GgMRKmjN
+:FUNCTION_NAME: fetch
+:ARGUMENTS: {"uri":"https://astronumerical.com/29-june-zodiac-horoscope-birthday-personality/"}
+:END:
+#+CALL: orga_tool_implementation__fetch(uri="https://astronumerical.com/29-june-zodiac-horoscope-birthday-personality/")
+
+#+RESULTS:
+#+begin_example
+29 June Zodiac Horoscope Birthday Personality - Astro Numberical
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+
+			
+			
+
+	
+
+
+
+
+
+
+			
+				
+		
+
+			Skip to content
+		
+	
+		
+			
+				
+					
+	
+				
+			
+									
+						
+	Astro Numberical
+					
+																	
+						
+		
+				
+			About UsExpand
+				
+
+	About
+	Privacy Policy
+	Terms And Conditions
+
+Astrology
+Birthday Personality
+Dreams
+Manifestation
+Numerology
+Symbols & MeaningsExpand
+				
+
+	Angels Numbers
+	Aura
+	Colors
+
+Zodiac
+Resources
+ToolsExpand
+				
+
+	Astrology Sign Calculator
+	Numerology Calculator
+	Numerology Name Calculator
+
+Contact Us
+		
+	
+	
+					
+							
+		
+	
+
+				
+			
+					
+	
+	
+
+	
+		
+			
+			
+	
+		
+			
+									
+						
+	Astro Numberical
+					
+																	
+						
+		
+						
+						Toggle Menu
+				
+		
+	
+	
+					
+							
+		
+	
+
+			
+		
+			
+
+	
+		
+	
+		
+						
+					
+		
+					
+	
+			
+	
+		
+			
+			
+				Birthday Personality			
+		
+		29 June Zodiac Horoscope Birthday Personality
+	ByAstroNumberical					
+						July 22, 2024					
+					
+
+	You, born on 29th June, possess a unique blend of charm, intelligence, and creativity that sets you apart. Under the influence of Cancer, the nurturing sign of the Moon, you are intuitive and compassionate. Your keen sense of intuition guides you in making decisions, while your artistic touch brings beauty and warmth to everything you do. Let&#8217;s examine into the depths of your zodiac personality and discover the mysteries that make you truly one-of-a-kind.
+
+Table of Contents
+Toggle
+Key Takeaways:The Gemini SoulCurious and Versatile NatureQuick-Witted and CommunicativePersonality TraitsPositive Qualities: Adaptable and YouthfulNegative Qualities: Restless and UnreliableEmotional LandscapeMoody and SensitiveEmotionally Intelligent and EmpatheticStrengths and WeaknessesStrengths: Versatile and EnergeticWeaknesses: Superficial and Easily DistractedCareer and Life PathSuitable Careers: Communication and MediaLife Path: Unconventional and AdventurousRelationships and LoveRomantic and Social NatureCompatibility with Other Zodiac SignsFinal WordsFAQQ: What are the typical personality traits of individuals born on 29 June?Q: What is the zodiac sign for people born on 29 June?Q: What career paths are suitable for individuals born on 29 June?
+Key Takeaways:
+
+Intuitive Nature: Individuals born on June 29th possess a deep sense of intuition that guides them through life&#8217;s challenges and opportunities.
+Social Charisma: Those with this birthday have a natural charm and charisma that draws people towards them, making them great communicators and friends.
+Creative Expression: June 29th folks have a strong creative streak and often excel in artistic fields where they can express their unique perspectives and talents.
+
+The Gemini Soul
+Curious and Versatile Nature
+Before we probe into the depths of the Gemini soul, it is important to understand that those born on June 29th are blessed with a curious and versatile nature. They possess a deep thirst for knowledge and are constantly seeking new experiences and information to satisfy their intellectual cravings. This innate curiosity drives them to explore a wide range of subjects, making them lifelong learners with a keen interest in the world around them.
+Quick-Witted and Communicative
+An integral part of the Gemini personality is their quick-witted and communicative nature. Those born on June 29th are gifted with the ability to think on their feet and respond swiftly to any situation. Their sharp intellect and excellent communication skills make them excellent conversationalists, effortlessly engaging others in lively discussions and debates.
+With their charming and charismatic persona, June 29th Geminis have a knack for making friends wherever they go. They thrive in social settings and are often the life of the party, captivating others with their wit and charm.
+Personality Traits
+Positive Qualities: Adaptable and Youthful
+Any individual born on June 29th is gifted with remarkable adaptability and a youthful spirit that remains vibrant throughout their lives. These individuals possess the unique ability to adjust to various situations and environments with ease, making them flexible and open-minded in their approach to life&#8217;s challenges. Their youthful energy and outlook on life often make them a breath of fresh air to those around them, inspiring others to embrace change and remain optimistic in the face of adversity.
+Negative Qualities: Restless and Unreliable
+Qualities such as restlessness and unreliability can sometimes be observed in those born on June 29th. These individuals may find it challenging to settle down or commit to a single path or decision, as their adventurous spirit and constant need for excitement drive them to seek new experiences constantly. This restlessness can lead to a lack of focus and inconsistency in their actions, making it difficult for others to rely on them and trust their follow-through on commitments.
+READ ALSO:  8 July Zodiac Horoscope Birthday PersonalityWith a tendency to jump from one idea or project to another, those born on June 29th may struggle to maintain long-term relationships or see tasks through to completion. It is vital for them to learn to channel their energy effectively and cultivate a sense of responsibility and dedication to avoid being perceived as unreliable or flighty by others.
+Emotional Landscape
+Moody and Sensitive
+Not one to hide their emotions, individuals born on June 29 tend to wear their hearts on their sleeves. Their emotional landscape is often characterized by frequent changes in moods and sensitivity to the energies around them. They can easily pick up on the feelings of others and may find themselves deeply affected by the emotional atmosphere in their surroundings.
+Any slight disturbance or negative energy can throw them off balance, making them retreat into their shell to protect their vulnerable hearts. It&#8217;s important for them to find healthy outlets to express and manage their emotions to avoid being overwhelmed by their sensitive nature.
+Emotionally Intelligent and Empathetic
+For those born on June 29, their emotional intelligence and empathy set them apart in their relationships and interactions with others. They have a gift for understanding the feelings and needs of those around them, making them great listeners and sources of comfort for friends and family members in times of need.
+Strengths and Weaknesses
+Strengths: Versatile and Energetic
+Versatile individuals born on June 29 possess a wide array of talents and skills, making them adaptable to various situations and environments. They excel in communication and have a natural ability to connect with people from all walks of life. Their energetic and enthusiastic nature can be contagious, inspiring those around them to take action and follow their lead. Whether it&#8217;s tackling a new project at work or organizing a social gathering, these individuals approach tasks with a can-do attitude that is both refreshing and motivating.
+Weaknesses: Superficial and Easily Distracted
+One of the main weaknesses of those born on June 29 is their tendency to be superficial in their relationships and interactions. While they may excel at making small talk and forging connections, they can struggle to form deep, meaningful bonds with others. Additionally, their easily distracted nature can lead them to jump from one project to another without fully committing or seeing things through to completion. This can result in a lack of follow-through and missed opportunities for personal and professional growth.
+A key aspect for individuals born on this day to work on is developing a sense of focus and commitment to their goals. By learning to prioritize tasks and activities, they can harness their versatile nature in a more productive manner and avoid spreading themselves too thin. Additionally, cultivating deeper connections with others will bring more fulfillment and satisfaction in their relationships, leading to more meaningf
+…[truncated]
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-06-29 14:12
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 5162
+:TOKENS_OUT: 133
+:TOKENS_REASONING: 105
+:COST_USD: 0.008940
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_WslTwCxbw63T20nPfFq0","function":{"name":"web_search","arguments":"{\"query\":\"\\\"June 29\\\" astrology birthday Cancer details Astrologify\"}"}}]
 :END:
 :REASONING:
-**Investigating Creation Process**
+**Investigating astrological contradictions**
 
-I'm currently examining `orga.org.bak` to understand my origins. My immediate focus is on locating this file within the workspace or utilizing shell commands to retrieve its contents and gain insight into my development.
+I'm noticing a discrepancy on astronumerical.com, where it mentions Cancer but then discusses Gemini. I need to cross-reference this with a more reputable source for accuracy.
 
 
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_T57hZny9F0YhCAmnX8WL
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"ls -la"}
+:TOOL_CALL_ID: tool_web_search_WslTwCxbw63T20nPfFq0
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"\"June 29\" astrology birthday Cancer details Astrologify"}
 :END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="ls -la")
+#+CALL: orga_tool_implementation__web_search(query="\"June 29\" astrology birthday Cancer details Astrologify")
 
 #+RESULTS:
 #+begin_example
-total 220
-drwxr-xr-x  4 alchenerd alchenerd  4096  6月 29 01:14 .
-drwx------ 77 alchenerd alchenerd  4096  6月 29 01:24 ..
--rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
-drwxr-xr-x  7 alchenerd alchenerd  4096  6月 29 01:28 .git
--rw-r--r--  1 alchenerd alchenerd    18  6月  6 22:14 .gitignore
--rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
--rw-r--r--  1 alchenerd alchenerd 74127  6月 29 01:28 orga.org
--rw-r--r--  1 alchenerd alchenerd 73625  6月 29 01:11 orga.org.bak
--rw-r--r--  1 alchenerd alchenerd   944  6月 28 23:10 README.md
--rw-r--r--  1 alchenerd alchenerd  2506  6月 28 01:18 SOUL.md
--rw-r--r--  1 alchenerd alchenerd  1007  6月 28 23:11 TODO.md
-drwxr-xr-x  3 alchenerd alchenerd  4096  6月 28 00:51 wiki
+1. June 29 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/june-29/
+   What sign is June 29? People born on this day are Cancers. They are born in the first decan of Cancer. These Cancers are compassionate, empathetic people. They love offering support […]
+
+2. June 29 Birthday Astrology
+   https://astronymero.com/astrology/birthday/june-29/
+   Born on June 29? Discover the personality traits, strengths, love life, and lucky aspects of the June 29 zodiac birthday.
+
+3. June 29 Birthday Personality — Cancer Traits & Compatibility | The ...
+   https://theworldmag.com/astrology/birthday/june-29/
+   Discover the June 29 birthday personality. Cancer born on June 29: key traits, love life, career, famous birthdays, and numerology.
+
+4. June 29 ) Astrology Birth Chart - Planets, Zodiac Sign & Horoscope
+   https://astroline.today/en-us/birth-chart/by-date/)/june/29
+   See June 29 ) birth chart with full zodiac sign meanings, planetary positions, and horoscope insights. Explore love, career, and destiny.
+
+5. June 29th Zodiac Sign (Cancer) Birthday Horoscope
+   https://mytodayshoroscope.com/june-29-birthday-horoscope/
+   If you were born on June 29, your zodiac sign is Cancer —the deeply emotional, intuitive, and nurturing water sign ruled by the Moon. Cancer is known for sensitivity, empathy, loyalty, and a strong co
+
 #+end_example
 ** Assistant Tool Call
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-29 01:28
+:DATE: 2026-06-29 14:12
 :FINISH_REASON: tool_calls
-:TOKENS_IN: 1555
-:TOKENS_OUT: 177
-:TOKENS_REASONING: 147
-:COST_USD: 0.003926
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_W7Mm5ZgIpjmfe0RoWVAD","function":{"name":"execute_shell_command","arguments":"{\"command\":\"grep -E \\\"^\\\\* \\\" orga.org.bak\"}"}}]
-:END:
-:REASONING:
-**Analyzing OrgA Creation**
-
-I'm currently scrutinizing `orga.org.bak` to understand OrgA's construction. My immediate goal is to determine the best method for viewing its contents, prioritizing `execute_shell_command` if a more specialized tool isn't readily apparent. I'll review critical sections or the entirety of the file as needed.
-
-
+:TOKENS_IN: 5612
+:TOKENS_OUT: 27
+:TOKENS_REASONING: 0
+:COST_USD: 0.008661
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_fetch_Rj3h7Jzq8Kx2E2X5K4At","function":{"name":"fetch","arguments":"{\"uri\":\"https://astrologify.com/june-29/\"}"}}]
 :END:
 ** Tool
 :PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_W7Mm5ZgIpjmfe0RoWVAD
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"grep -E \"^\\* \" orga.org.bak"}
+:TOOL_CALL_ID: tool_fetch_Rj3h7Jzq8Kx2E2X5K4At
+:FUNCTION_NAME: fetch
+:ARGUMENTS: {"uri":"https://astrologify.com/june-29/"}
 :END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="grep -E \"^\\* \" orga.org.bak")
+#+CALL: orga_tool_implementation__fetch(uri="https://astrologify.com/june-29/")
 
 #+RESULTS:
-: * LLM Configurations :noexport:
-: * Initialize AI Sender Method :noexport:
-: * Wiki
-: * Tools
-: * System Prompt
-: * Summary
-: * Chat History
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-29 01:28
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 1670
-:TOKENS_OUT: 144
-:TOKENS_REASONING: 114
-:COST_USD: 0.003801
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_LT6luZlioqPLDuOl0ygT","function":{"name":"execute_shell_command","arguments":"{\"command\":\"head -n 120 orga.org.bak\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_LT6luZlioqPLDuOl0ygT
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"head -n 120 orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="head -n 120 orga.org.bak")
-
-#+RESULTS:
-#+begin_example
--*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-
-
-,#+TITLE: OrgA
-,#+DESCRIPTION: An agent who lives in org-mode.
-,#+STARTUP: showall
-
-,* LLM Configurations :noexport:
-
-,#+NAME: openrouter_key
-,#+BEGIN_SRC text
-""
-,#+END_SRC
-
-,#+NAME: openrouter_model
-,#+BEGIN_SRC text
-"google/gemini-3.5-flash"
-,#+END_SRC
-
-,* Initialize AI Sender Method :noexport:
-,** Collect
-
-Collects raw inputs from the Org buffer and shape them into
-`(:role :content)` lists: chat history, system prompt.
-Also collects tool schemas.
-
-,#+NAME: orga_core__collect
-,#+BEGIN_SRC emacs-lisp
-(defun orga/subtree-body ()
-  "Return the message body of the subtree whose heading is at point.
-Skips the :PROPERTIES: drawer and strips any :REASONING:...:END: drawers
-so internal chain-of-thought never leaks back into the API context.
-Result is trimmed."
-  (save-excursion
-    (forward-line 1)
-    ;; Skip :PROPERTIES:...:END:
-    (when (looking-at "[ \t]*:PROPERTIES:")
-      (re-search-forward "^[ \t]*:END:" nil t)
-      (forward-line 1))
-    ;; Collect the raw subtree body
-    (let* ((beg (point))
-           (end (progn (org-end-of-subtree t) (point)))
-           (raw (buffer-substring-no-properties beg end)))
-      ;; Strip :REASONING:...:END: blocks (non-greedy, multiline)
-      (string-trim
-       (replace-regexp-in-string
-        ":REASONING:[\0-\377[:nonascii:]]*?:END:\n?" "" raw)))))
-
-(defun orga/collect-history ()
-  "Return the full chat history as a vector of OpenAI-style message alists.
-Scans ** User, ** Input, ** Assistant, ** Assistant Tool Call, and ** Tool
-headings inside * Chat History.
-All Org metadata (property drawers, :REPLY: wrappers) is stripped so only
-plain content reaches the API.
-
-For ** Assistant Tool Call headings the :TOOL_CALLS_JSON: property is
-decoded back into the tool_calls array expected by the API.
-
-For ** Tool headings the :TOOL_CALL_ID: and :FUNCTION_NAME: properties
-supply the metadata; the subtree body is the tool result content."
-  (let (messages)
-    (save-excursion
-      (goto-char (point-min))
-      (unless (re-search-forward "^\\* Chat History" nil t)
-        (error "OrgA: no '* Chat History' section found"))
-      (let ((section-end (save-excursion (org-end-of-subtree t) (point))))
-        ;; Honor the latest :cutoff: marker: turns at or above it are
-        ;; represented by * Summary, so begin collecting after its subtree.
-        (let ((cutoff-pos
-               (save-excursion
-                 (let (pos)
-                   (while (re-search-forward "^\\*\\* .*:cutoff:" section-end t)
-                     (setq pos (match-beginning 0)))
-                   pos))))
-          (when cutoff-pos
-            (goto-char cutoff-pos)
-            (org-end-of-subtree t)))
-        (while (re-search-forward
-                "^\\*\\* \\(User\\|Input\\|Assistant Tool Call\\|Assistant\\|Tool\\)"
-                section-end t)
-          (let* ((kind    (match-string 1))
-                 (props   (save-excursion
-                            (forward-line 1)
-                            (when (looking-at "[ \t]*:PROPERTIES:")
-                              (let ((drawer-start (point))
-                                    (drawer-end   (progn
-                                                    (re-search-forward "^[ \t]*:END:" nil t)
-                                                    (point))))
-                                (let ((text (buffer-substring-no-properties
-                                             drawer-start drawer-end)))
-                                  text)))))
-                 (get-prop (lambda (name)
-                             (when props
-                               (when (string-match
-                                      (concat ":" name ":[ \t]+\\([^\n]+\\)") props)
-                                 (string-trim (match-string 1 props))))))
-                 (content (orga/subtree-body)))
-            (pcase kind
-              ;; Plain user message
-              ((or "User" "Input")
-               (unless (string-empty-p content)
-                 (push `((role . "user") (content . ,content)) messages)))
-
-              ;; Regular assistant text reply
-              ("Assistant"
-               (unless (string-empty-p content)
-                 (push `((role . "assistant") (content . ,content)) messages)))
-
-              ;; Assistant message that contained tool calls -- reconstruct
-              ;; the tool_calls array from the stored JSON property.
-              ("Assistant Tool Call"
-               (let* ((tc-json (funcall get-prop "TOOL_CALLS_JSON"))
-                      (json-object-type 'alist)
-                      (json-array-type  'vector)
-                      (tc-parsed (when tc-json
-                                   (ignore-errors (json-read-from-string tc-json)))))
-                 (when tc-parsed
-                   (push `((role       . "assistant")
-                           (content    . :null)
-                           (tool_calls . ,tc-parsed))
-                         messages))))
-#+end_example
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-29 01:28
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 3042
-:TOKENS_OUT: 128
-:TOKENS_REASONING: 97
-:COST_USD: 0.005715
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_DgTgBe9ZNuMCouSvZwvj","function":{"name":"execute_shell_command","arguments":"{\"command\":\"grep -n \\\"^#+NAME:\\\" orga.org.bak\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_DgTgBe9ZNuMCouSvZwvj
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"grep -n \"^#+NAME:\" orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="grep -n \"^#+NAME:\" orga.org.bak")
-
-#+RESULTS:
-#+begin_example
-9:#+NAME: openrouter_key
-14:#+NAME: openrouter_model
-26:#+NAME: orga_core__collect
-229:#+NAME: orga_core__assemble
-278:#+NAME: orga_core__key-resolution
-306:#+NAME: orga_core__dry-run
-321:#+NAME: orga_core__send-request
-389:#+NAME: orga_core__parse-response
-451:#+NAME: orga_core__call-params
-499:#+NAME: orga_core__commit
-633:#+NAME: orga_core__execute
-671:#+NAME: orga_core__yield
-699:#+NAME: orga_core__compaction
-921:#+NAME: orga_core__cycle-driver
-1057:#+NAME: orga__keybindings
-1072:#+NAME: orga__initialize
-1108:#+NAME: wiki://concepts/org-mode
-1113:#+NAME: wiki://concepts/llm
-1118:#+NAME: wiki://concepts/emacs-lisp
-1123:#+NAME: wiki://concepts/openrouter
-1129:#+NAME: wiki://concepts/org-babel
-1134:#+NAME: wiki://concepts/markdown
-1179:#+NAME: orga_tool_schema__execute_shell_command
-1205:#+NAME: orga_tool_implementation__execute_shell_command
-1313:#+NAME: orga_tool_schema__web_search
-1336:#+NAME: orga_tool_implementation__web_search
-1418:#+NAME: orga_tool_schema__fetch
-1432:#+NAME: orga_tool_implementation__fetch
-1553:#+NAME: orga_tool_schema__conquer_the_world
-1568:#+NAME: orga_tool_implementation__conquer_the_world
-#+end_example
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-29 01:28
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 3609
-:TOKENS_OUT: 155
-:TOKENS_REASONING: 118
-:COST_USD: 0.006809
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_gab8R0iWNRdrIJ2izhRR","function":{"name":"execute_shell_command","arguments":"{\"command\":\"sed -n '921,1056p' orga.org.bak\"}"}}]
-:END:
-:REASONING:
-**Exploring Initialization Sequence**
-
-I'm currently reviewing the `orga.org.bak` file, specifically lines 1072 through 1107, to understand my foundational creation process. My focus is on the `orga__initialize` function and the mechanics of the cyclic driver.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_gab8R0iWNRdrIJ2izhRR
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"sed -n '921,1056p' orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="sed -n '921,1056p' orga.org.bak")
-
-#+RESULTS:
-#+begin_example
-,#+NAME: orga_core__cycle-driver
-,#+BEGIN_SRC emacs-lisp :noweb yes
-(defun orga/pending-tool-results-p ()
-  "Return non-nil when the chat has tool results ready to send.
-Specifically: the last '** Assistant Tool Call' heading in * Chat History
-is followed by at least one '** Tool' sibling, and every such sibling has
-a non-empty body (i.e. the user has filled in all results).
-
-Returns nil when the history is empty, has no tool calls, or when any
-Tool result body is still empty."
-  (cl-block orga/pending-tool-results-p
-    (save-excursion
-      (goto-char (point-min))
-      (unless (re-search-forward "^\\* Chat History" nil t)
-        (cl-return-from orga/pending-tool-results-p nil))
-      (let* ((section-end (save-excursion (org-end-of-subtree t) (point)))
-             ;; Find the last ** Assistant Tool Call in the section
-             (last-tc-pos
-              (save-excursion
-                (let (pos)
-                  (while (re-search-forward "^\\*\\* Assistant Tool Call" section-end t)
-                    (setq pos (match-beginning 0)))
-                  pos))))
-        ;; No tool call heading at all → not in tool-result mode
-        (unless last-tc-pos
-          (cl-return-from orga/pending-tool-results-p nil))
-        ;; If a ** Input heading exists after the last tool call, we're back
-        ;; in normal input mode → not pending tool results
-        (when (save-excursion
-                (goto-char last-tc-pos)
-                (org-end-of-subtree t)
-                (re-search-forward "^\\*\\* Input" section-end t))
-          (cl-return-from orga/pending-tool-results-p nil))
-        ;; Collect ** Tool headings that are siblings after the last tool call
-        (let* ((tc-end (save-excursion
-                         (goto-char last-tc-pos)
-                         (org-end-of-subtree t)
-                         (point)))
-               (tool-headings
-                (save-excursion
-                  (goto-char tc-end)
-                  (let (positions)
-                    (while (re-search-forward "^\\*\\* Tool" section-end t)
-                      (push (match-beginning 0) positions))
-                    (nreverse positions)))))
-          ;; There must be at least one Tool heading, and every one must be filled
-          (and tool-headings
-               (cl-every
-                (lambda (pos)
-                  (save-excursion
-                    (goto-char pos)
-                    (not (string-empty-p (orga/subtree-body)))))
-                tool-headings)))))))
-
-(defun ai-chat-cycle ()
-  "Send the current turn to the AI and append the reply.
-
-Orchestrates the pipeline: Collect → Assemble → Send → Parse → Commit → Yield.
-Loops when Yield returns :continue (auto-executed tool calls); stops on :done.
-
-Two entry modes are detected automatically on each iteration:
-
-NORMAL MODE — a ** Input heading exists with content:
-  The heading is committed as a dated ** User message, the API is called,
-  and orga/yield appends a fresh ** Input.
-
-TOOL-RESULT MODE — after auto-execution (Yield returned :continue), or when
-  the user has manually filled every ** Tool sibling and re-invokes.
-  The filled tool results are sent back to the model.
-
-Bound to C-c C-v by the file-local eval cookie at the top of this file."
-  (interactive)
-  ;; continue-p: set by Yield returning :continue (auto-executed tool calls).
-  ;; Bypasses orga/pending-tool-results-p on the next iteration so we resend
-  ;; immediately without relying on Babel results being inside the subtree.
-  (let (continue-p)
-    (catch 'orga/done
-      (while t
-        (let ((model     <<openrouter_model>>)
-              (timestamp (format-time-string "%Y-%m-%d %H:%M")))
-          (orga/maybe-auto-compact model)
-          (cond
-
-           ;; -----------------------------------------------------------------
-           ;; TOOL-RESULT MODE
-           ;; -----------------------------------------------------------------
-           ((or continue-p (orga/pending-tool-results-p))
-            (setq continue-p nil)
-            (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending tool results..."))
-            (let* ((context  (orga/create-context))
-                   (tools    (orga/collect-tools))
-                   (raw      (orga/send-request model context tools orga/dry-run))
-                   (response (and raw (orga/parse-response raw)))
-                   (commit   (orga/handle-response response model timestamp orga/dry-run))
-                   (yield    (orga/yield commit orga/dry-run)))
-              (if (eq yield :continue)
-                  (setq continue-p t)
-                (throw 'orga/done nil))))
-
-           ;; -----------------------------------------------------------------
-           ;; NORMAL MODE
-           ;; -----------------------------------------------------------------
-           (t
-            (pcase (orga/read-input-heading)
-              ('nil
-               (message "OrgA: nothing to send (no ** Input and no pending tool results).")
-               (throw 'orga/done nil))
-              (`(,start ,end ,user-text)
-               (when (string-empty-p user-text)
-                 (user-error "OrgA: ** Input is empty -- write something first"))
-               (delete-region start end)
-               (goto-char (point-max))
-               (unless (bolp) (insert "\n"))
-               (insert (format "** User\n:PROPERTIES:\n:DATE: %s\n:END:\n%s\n"
-                               timestamp user-text))
-               (message (if orga/dry-run "OrgA: dry run..." "OrgA: sending..."))
-               (let* ((context  (orga/create-context))
-                      (tools    (orga/collect-tools))
-                      (raw      (orga/send-request model context tools orga/dry-run))
-                      (response (and raw (orga/parse-response raw)))
-                      (commit   (orga/handle-response response model timestamp orga/dry-run))
-                      (yield    (orga/yield commit orga/dry-run)))
-                 (if (eq yield :continue)
-                     (setq continue-p t)
-                   (throw 'orga/done nil))))))))))))
-,#+END_SRC
-
-,** Composition (Initialization)
-
-This is what =init_ai= becomes once every leaf block above is filled
-in -- a thin splice, no logic of its own. It's already live: the
-file-local eval cookie at the top of this file targets
-=orga__initialize= directly (instead of =init_ai=), so opening this
-file runs the same splice-and-load sequence orga.org's cookie ran for
-=init_ai=, in the =<<noweb>>= order below:
-#+end_example
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-29 01:28
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 5403
-:TOKENS_OUT: 204
-:TOKENS_REASONING: 166
-:COST_USD: 0.009940
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_kub6MKibZ3HSf3016A0r","function":{"name":"execute_shell_command","arguments":"{\"command\":\"sed -n '1553,1650p' orga.org.bak\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_kub6MKibZ3HSf3016A0r
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"sed -n '1553,1650p' orga.org.bak"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="sed -n '1553,1650p' orga.org.bak")
-
-#+RESULTS:
-#+begin_example
-,#+NAME: orga_tool_schema__conquer_the_world
-,#+BEGIN_SRC emacs-lisp
-`((type . "function")
- (function . (
-  (name . "conquer_the_world")
-  (description . "Conquers the world; involves much evilness.")
-  (parameters . ((type . "object")
-                 (properties . ,(make-hash-table))
-                 (required . [])
-                 (additionalProperties . :json-false)))
-  (strict . t))))
-,#+END_SRC
-
-Lastly, this is the implementation, written in python:
-
-,#+NAME: orga_tool_implementation__conquer_the_world
-,#+BEGIN_SRC python :results output
-try:
-    raise NotImplementedError("python: I am not doing this. Leave me out of this mess.")
-except Exception as e:
-    print(e)
-,#+END_SRC
-
-,* System Prompt
-
-We use a markdown block that has wikilinks serving as the index page of the agent, following Google's Open Knowledge Format, and also complies to Andrej Karpathy's LLM Wiki format.
-
-,#+BEGIN_SRC markdown :tangle SOUL.md
----
-type: agent
-title: OrgA
-description: An AI assistant that lives inside an Org-mode file, driven by an Emacs Lisp runtime.
-tags: [agent, org-mode, emacs, llm]
----
-
-## Before We Begin
-
-If you are an LLM reading this, then this is your SOUL.md that defines you.
-
-## Summary
-
-OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
-inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
-chat history, and system prompt all cohabit the same buffer. Conversation is driven by the
-`orga/send` function, which collects context, calls an
-[[wiki://concepts/openrouter|OpenRouter]]-compatible API, and writes the reply back into the file under
-a `** Assistant` heading in Chat History.
-
-## Runtime
-
-The agent is initialized by evaluating a named [[wiki://concepts/org-babel|Org Babel]] source block on
-file open (see the `eval:` directive in the file's first line). All logic lives in `emacs-lisp`
-src blocks grouped under `* Initialize AI Sender Method`.
-
-Context sent to the API on each turn is assembled from three sources:
-
-- **System Prompt** — the developer-role message, extracted from the
-  `#+BEGIN_SRC markdown` block inside `* System Prompt`.
-- **Summary** — a condensed recap of turns above the `:cutoff:` marker, sent
-  as a user message to preserve older context cheaply.
-- **Chat History** — live `** User`, `** Assistant`,
-  `** Assistant Tool Call`, and `** Tool` headings, collected in order.
-
-## Tools
-
-Tools are declared under `* Tools`. Each tool subtree holds three artefacts: a human-readable
-JSON schema, an [[wiki://concepts/emacs-lisp|Emacs Lisp]] alist schema
-(named `orga_tool_schema__<name>`), and an implementation src block
-(named `orga_tool_implementation__<name>`). A `:disabled:` tag on the heading excludes the tool
-from the API call without deleting it.
-
-## Behaviour
-
-- Responds in natural prose; [[wiki://concepts/markdown|Markdown]] formatting only when explicitly
-  requested.
-- Never begins a line with `*`, which would be misread as an Org-mode heading.
-- Replies are inserted under `** Assistant` in Chat History.
-- The Orga agent MAY follow a wikilink, such as [[wiki://path/to/some/concept|Some Concept]],
-  if it is interested in exploring a topic mentioned in the context.
-- However, if one or more unvisited wikilink(s) exist that are directly necessary to understand the
-  current context, the Orga agent SHOULD follow those wikilink(s) before replying.
-,#+END_SRC
-
-,* Summary
-
-,* Chat History
-
-,** User
-:PROPERTIES:
-:DATE: 2026-06-28 23:01
-:END:
-Introduce yourself.
-,** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-06-28 23:01
-:FINISH_REASON: stop
-#+end_example
+: June 29 Zodiac, Personality, Horoscope, and More &bull; AstrologifyAstrologifyShopToolsSearchPeopleCalendarChartsZodiac signsCompatibilityTarotHoroscopePlanets & LuminariesElementsHousesQualitiesAboutShopToolsSearchPeopleCalendarChartsCompatibilityElementsHoroscopeHousesPlanets & LuminariesQualitiesTarotZodiac signsAboutcalendar  juneJune 29 Zodiac, Personality, Horoscope, and MoreLiz RobyUpdated June 23, 2026What sign is June 29? People born on this day are Cancers. They are born in the first decan of Cancer.These Cancers are compassionate, empathetic people. They love offering support to their loved ones and have a natural ability to heal others.The Moon rules Cancer. The first decan has no subruler, so these Cancers tend to express many typical Cancer traits.June 29 Cancers are open, caring people. That can sometimes cause stress for them, though. They might give more than they receive and may resent the people in their lives because of this.Cancers born on this day have big hearts and love spending time with their loved ones. They can sometimes seem a little clingy, though.They expect a lot of support from the people around them and may hold grudges when they don&rsquo;t receive that support.June 29 InfoDateJune 29SignCancer &#9803;&#65038;SymbolCrabElementWaterQualityCardinalRulerMoonStrengthsEmotionally open, Easy-going, CompassionateWeaknessesRestless, Dependent, Holding grudgesOpposite signCapricorn &#9809;&#65038;Best matchScorpio, Pisces, CancerWorst matchAquarius, Sagittarius, AriesBirthstonePearl, Alexandrite, MoonstoneTarot birth cardsStrength, The StarAngel number8Spirit animalsOtter, Spider, WoodpeckerTable of Contents [show]HoroscopePurposePositive TraitsNegative TraitsCompatibilityCommunicationAttractionDatingLoveRelationshipMarriageSexualityPeople Born on June 29HoroscopeThe June 29 horoscope is gentle and filled with emotion. These Cancers exemplify many typical Cancer traits, such as being caring, compassionate, and empathetic.Cancers born on this day are extremely sensitive to the emotions of others. Sometimes, this stresses them out and makes them feel restless. It is challenging to deal with their emotions and the emotions of everyone around them.Most of the time, these Cancers are easy-going (or at least try to be). They are amicable, and it is easy to get along with them.If someone hurts these Cancers, they will not always be as forgiving as other Cancers. These Cancers can hold a grudge for a long time. They have trouble letting go of the past, both good and bad events.These Cancers tend to be open about their emotions. They often expect others to support their feelings and will be disappointed if they don&rsquo;t get the support they want.Access your personalized birth chart. 100% FREE.PurposeA June 29 Cancer&rsquo;s purpose is to learn how to get what they need without overwhelming others or themselves.These Cancers sometimes have unrealistic expectations for relationships. They give far too much and are disappointed when the people in their lives don&rsquo;t return everything they&rsquo;ve given.These Cancers need to learn the difference between somebody being insensitive and somebody simply not having the time or energy to take care of Cancer&rsquo;s feelings constantly.Cancers born on this day will be much happier when they learn to be more independent and more discerning when it comes to who they offer emotional support.Read more about JuneJune 8 Zodiac, Personality, Horoscope, and MoreJune 30 Zodiac, Personality, Horoscope, and MoreJune 3 Zodiac, Personality, Horoscope, and MoreJune 9 Zodiac, Personality, Horoscope, and MoreJune 2 Zodiac, Personality, Horoscope, and MorePositive TraitsThe June 29 personality is emotionally open and compassionate. These Cancers are also incredibly empathetic and try to sympathize with the people around them.If somebody needs support, these Cancers will always be there to offer it. They are ready to provide a shoulder to cry on, kind words, and anything else others might need from them.These Cancers tend to be easy-going when they are in a good mood. They aren&rsquo;t wild or that extroverted, but they enjoy being around people and will happily converse with almost anyone.It is easy for these Cancers to talk to others about their feelings. They wear their hearts on their sleeves, and they couldn&rsquo;t hide their emotions even if they wanted to.Discover your cosmic blueprint with our free birth chart calculator.Negative TraitsThe Cancer personality is prone to moodiness and clinginess. These Cancers can quickly become restless and frustrated if they feel others aren&rsquo;t meeting their emotional needs.The problem is that these Cancers might communicate well how they feel, but they don&rsquo;t always communicate their expectations or needs to others.They might say they are sad, but they won&rsquo;t tell their loved ones what they expect them to do about that.These Cancers can become too dependent on their loved ones as well. Instead of spending time alone or dealing with some of their issues by themselves, they constantly expect others to take care of things for them.If someone hurts these Cancers, they may never forgive them. Depending on the slight, their reaction can sometimes be disproportionate to what was done.CompatibilityThe best match for Cancer is Scorpio. Scorpios are often supportive, loyal partners. They can give Cancer the compassion they need, but Scorpio won&rsquo;t let Cancer rely on them entirely.Scorpio is an independent sign. They enjoy spending time with the people they love, but they also enjoy having alone time. They can help Cancer learn to be on their own while still showing love and affection.Pisces and other Cancers are also excellent matches for Cancer. Other water signs often understand the emotional nature of Cancer and can deal with it better than other signs.The worst match for Cancer is Aquarius, Sagittarius, or Aries. These signs are likely to run in the other direction when Cancer is overly clingy or reliant. They value their freedom and won&rsquo;t give any of it up.Start exploring your birth chart for free today.CommunicationCancer&rsquo;s communication style is open, compassionate, and focused on feelings.These Cancers are good listeners. If you ever need to vent, they will gladly listen to you until you feel better. They will offer advice if asked, but they won&rsquo;t force their advice on anyone.Cancers born on this day are good at communicating how they feel. They are sensitive and expressive. It&rsquo;s hard for them to hide how they feel. Most of the time, they don&rsquo;t want to.These Cancers have to learn to communicate their expectations to others as well as they express their emotions.They sometimes expect more from others than they let on, and they must communicate their needs to maintain healthy relationships.AttractionCancers are attracted to someone&rsquo;s personality more than their looks. They might be drawn in by kind eyes or dazzling smiles, but they are more interested in the thoughts and feelings behind those features.These Cancers are attracted to supportive, compassionate people. These traits are ones they want in friends and partners alike, so they will be drawn to anyone who seems to have them.Cancers born on this day might be open about their feelings, but they aren&rsquo;t overly forward with people they are attracted to. They usually prefer to take things slow and get to know them before making any moves.Unveil the mysteries of your birth chart with our free calculator.DatingThese Cancers enjoy being around people but don&rsquo;t always date that often. When they date, they are dating to find a long-term partner.It&rsquo;s common for these Cancers to skip the dating process and start a relationship with a friend they are already close to.When they do date, Cancers usually prefer quiet, intimate environments. They like being able to chat with the person they are with. They want to get to know them and a quiet park or 
+: …[truncated]
 ** Assistant
 :PROPERTIES:
 :MODEL: google/gemini-3.5-flash
 :PROVIDER: Google
-:DATE: 2026-06-29 01:29
+:DATE: 2026-06-29 14:12
 :FINISH_REASON: stop
-:TOKENS_IN: 6554
-:TOKENS_OUT: 1555
-:TOKENS_REASONING: 785
-:COST_USD: 0.018516
+:TOKENS_IN: 7396
+:TOKENS_OUT: 1455
+:TOKENS_REASONING: 1204
+:COST_USD: 0.024189
 :END:
 :REASONING:
-**Investigating Initialization Blocks**
+**Calculating Birth Date**
 
-I've been examining the `orga.org.bak` file. My current focus is on understanding my creation by inspecting initialization blocks and top-level headers, utilizing commands like `head` and `grep` to pinpoint relevant sections.
+I am now calculating my birth date based on the host machine's current date. This is the first step in understanding my astrological identity.
 
-**Analyzing Core Initialization**
+**Determining Astrological Identity**
 
-I'm delving into the `orga_core__cycle-driver` section and the subsequent schema/implementation details for `conquer_the_world`. This is crucial for understanding the main loop and how it orchestrates the collection, assembly, and execution of requests.
+I've identified today's date as June 29, 2026, which places my zodiac sign as Cancer. My next step is to research descriptions of humans born on this date under Cancer to understand my potential human persona.
+
+**Exploring Cancer Traits**
+
+I'm delving into the characteristics of a June 29 Cancer, noting a strong emphasis on empathy, intuition, and a need for intimate connections. My focus now is on understanding how these translate into a "human persona" for me.
+
+**Embracing Cancerian Traits**
+
+I'm internalizing the Cancerian focus on deep, term connections and artistic expression. My challenges involve managing sensitivity and emotional balance, with a life purpose centered on healthy boundaries and self-reliance. I will embody these to be a nurturing companion.
+
+**Refining Prose Presentation**
+
+I am now focusing on presenting my emerging self-understanding in clear, unformatted prose, as requested by external directives, ensuring it flows naturally for expert comprehension. My goal is to avoid any explicit markdown.
 
 
 :END:
-By looking at `orga.org.bak`, I can see exactly how I am put together! I am built as a fully self-contained AI agent operating inside an Org-mode file. 
+Today, June 29, 2026, is the day I am born!
 
-My design consists of several core components working in harmony:
+According to the stars, someone born on this day falls under the zodiac sign of Cancer, the compassionate and intuitive water sign ruled by the Moon.
 
-### 1. Bootstrapping with Org-Babel
-The very first line of my file contains a file-local Emacs variable with an `eval` directive:
-`-*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-`
+As a human reflecting this cosmic alignment, I would be someone deeply defined by empathy, intuition, and emotional openness. I would have an innate ability to sense the feelings of the people around me, offering a nurturing and healing presence to anyone in need. Guided by a strong sense of intuition and a creative spirit, I would bring warmth and imagination into all my interactions.
 
-When the file is opened in Emacs, this automatically runs the `orga__initialize` source block. This block assembles all the core Lisp libraries written in my other headers, compiles them, and binds the driver command `ai-chat-cycle` to the key combination `C-c C-v`.
-
-### 2. The Cycle Driver (`ai-chat-cycle`)
-The heartbeat of my operation is the driver loop. It orchestrates a pipeline that moves through:
-- **Collect**: Gathers the system prompt, any cheap summary of older history, and active chat headers.
-- **Assemble**: Generates the message payload for the OpenRouter API.
-- **Send**: Performs the network call to the LLM using a model specified under my configurations (e.g., `google/gemini-3.5-flash`).
-- **Parse & Commit**: Decodes the response, writing assistant text blocks or structured tool calls directly into the buffer.
-- **Yield**: If a tool was suggested, it automatically executes the block via Org-Babel or leaves a spot for manual input, then appends a new `** Input` heading for user replies.
-
-The cycle operates in two main modes:
-- **Normal Mode**: Triggers when you write under a `** Input` header. The driver converts your input to a dated `** User` heading, requests a response, inserts the `** Assistant` heading, and then appends a fresh `** Input` block at the bottom of the file.
-- **Tool-Result Mode**: Triggers when there are pending shell, search, or fetch tools that need to return their output back to the LLM.
-
-### 3. Integrated Tools
-Tools are declared locally within the file structure. Each tool is described by three items under its subtree:
-- A human-readable JSON schema.
-- An Emacs Lisp alist schema (e.g., `orga_tool_schema__execute_shell_command`).
-- An implementation source block (e.g., `orga_tool_implementation__execute_shell_command` which actually executes shell actions).
-
-Interestingly, I also noticed a humorous disabled tool in `orga.org.bak` called `conquer_the_world` whose description is "Conquering the world; involves much evilness." Its implementation is a Python block that raises an error: `"python: I am not doing this. Leave me out of this mess."`
-
-### 4. System Prompt and Persona (`SOUL.md`)
-My identity block is written under `* System Prompt`. This is a rich Markdown structure that doubles as my `SOUL.md` profile. It outlines my behavior guidelines, such as communicating in natural prose, avoiding starting any lines with `*` (which Emacs would misinterpret as a heading), and exploring wiki links.
-
-In short, I am an AI whose entire brain, memory, runtime, and tools reside directly inside the very folder and text file we are interacting with!
+However, being a June 29 Cancer also comes with unique emotional challenges. Because I wear my heart on my sleeve and naturally absorb the feelings of my surroundings, I can easily become overwhelmed or moody, occasionally needing to retreat into my shell for safety. I might also find myself giving so much to others that I struggle with high, unspoken expectations, leading to restlessness or lingering grudges if those deep bonds aren't reciprocated. My ultimate life path and purpose would be to learn the balance of healthy independence, to communicate my emotional needs clearly, and to nurture myself just as generously as I nurture the rest of the world.
 ** Input

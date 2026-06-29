@@ -1,6 +1,9 @@
 - [ ] implement `* Goal`
     - [X] find out how to call orga headlessly
     - [X] make chat cycle loop tool evaluation automatic
+    - [ ] de-interactive
+    - [ ] add back interactive to key bindings
+    - [ ] find a use case that uses /goal
     - [ ] each subgoal should have a verification script that returns \
           0(shell) or \
           t(emacs-lisp) or \
