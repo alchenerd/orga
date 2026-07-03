@@ -1,15 +1,15 @@
-- [ ] implement `* Goal`
+- [X] implement `* Goal`
     - [X] find out how to call orga headlessly
     - [X] make chat cycle loop tool evaluation automatic
-    - [ ] de-interactive
-    - [ ] add back interactive to key bindings
-    - [ ] find a use case that uses /goal
-    - [ ] each subgoal should have a verification script that returns \
+    - [X] de-interactive
+    - [X] add back interactive to key bindings
+    - [X] find a use case that uses /goal
+    - [X] add a `* Goal` heading
+    - [X] figure out how the goal should be implemented
+    - [X] each subgoal should have a verification script that returns \
           0(shell) or \
           t(emacs-lisp) or \
           True(python) on success
-    - [ ] passed verification should toggle todo list under `* Goal`
-    - [ ] there should be `on_pass` and `on_fail` hook script too
 - [ ] implement subagents
     - idea: `emacs --batch --visit abc.cyb.org ...` \
             reads `./trigger.org` and \

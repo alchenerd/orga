@@ -148,6 +148,29 @@ supply the metadata; the subtree body is the tool result content."
               (vector `((role . "developer")
                         (content . ,text))))))))))
 
+(defun orga/collect-goal ()
+  "Return the free-form prose under the '* Goal' heading.
+Only paragraph and plain-list content is collected; #+NAME: keywords,
+,#+BEGIN_...#+END_... blocks (src, example, etc.), and drawers are
+skipped automatically since they aren't `paragraph' or `plain-list'
+elements.  Returns nil if no '* Goal' heading is found."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward "^\\* Goal[ \t]*$" nil t)
+      (org-back-to-heading t)
+      (org-narrow-to-subtree)
+      (unwind-protect
+          (let (chunks)
+            (org-element-map (org-element-parse-buffer) '(paragraph plain-list)
+              (lambda (el)
+                (push (string-trim
+                       (buffer-substring-no-properties
+                        (org-element-property :begin el)
+                        (org-element-property :end el)))
+                      chunks)))
+            (string-join (nreverse chunks) "\n\n"))
+        (widen)))))
+
 (defun orga/collect-summary ()
   "Return the body of the * Summary heading as a single user-message vector.
 Returns nil when the heading is absent or empty.  The summary is a
@@ -228,7 +251,7 @@ Takes slots and concatenates them into the message vector sent to the API.
 
 #+NAME: orga_core__assemble
 #+BEGIN_SRC emacs-lisp
-(defvar orga/context-slot-order '(:system :summary :history)
+(defvar orga/context-slot-order '(:system :goal :summary :history)
   "Ordered list of context slot keywords.
 Slots are concatenated left-to-right to form the final message vector
 sent to the API.  Slots whose value is nil or an empty vector are skipped.")
@@ -249,6 +272,24 @@ Current slots:
     ;; :system -- persistent instructions sent before everything else.
     (when-let ((sys (orga/collect-system-prompt)))
       (setq slots (plist-put slots :system sys)))
+
+    ;; :goal -- what needs to be done.
+    (when-let ((_ orga/goal-active)
+               (goal-text (orga/collect-goal)))
+      (let* ((past-reasons (orga/collect-goal-log))
+             (content     (concat
+                           "You are operating under a goal directive. "
+                           "Work toward it every turn. Do not ask for "
+                           "confirmation; if uncertain, note it and continue "
+                           "with your highest-confidence action.\n\n"
+                           "Goal condition:\n" goal-text
+                           (when past-reasons
+                             (format "\n\nPast evaluator feedback(s):\n%s"
+                                     past-reasons)))))
+        (setq slots (plist-put slots :goal
+                               (vector `((role . "developer")
+                                         (content . ,content)))))))
+
 
     ;; :summary -- cumulative, disposable recap of pre-cutoff turns.
     ;; Sent as a user message so it never outranks fresh turns.
@@ -692,6 +733,34 @@ Execute and decides loop-vs-stop on a tool_calls response."
            :continue)
        (message "OrgA: tool call(s) received -- fill in ** Tool sections, then C-c C-v to continue.")
        :done))
+    ((and :reply orga/goal-active)
+     (let* ((turns  (1+ (orga/goal-turn-count)))
+            (capped (and orga/goal-max-turns
+                         (> turns orga/goal-max-turns))))
+       (if capped
+           (progn
+             (orga/goal-log-append "stopped" "Turn cap reached.")
+             (setq orga/goal-active nil)
+             (goto-char (point-max))
+             (unless (bolp) (insert "\n"))
+             (insert "** Input\n")
+             (unless noninteractive (message "OrgA: goal stopped — turn cap reached."))
+             :done)
+         (let ((result (orga/evaluate-goal)))
+           (orga/goal-log-append
+            (if (plist-get result :met) "achieved" "no")
+            (plist-get result :reason))
+           (if (plist-get result :met)
+               (progn
+             (setq orga/goal-active nil)
+             (goto-char (point-max))
+             (unless (bolp) (insert "\n"))
+             (insert "** Input\n")
+             (unless noninteractive (message "OrgA: goal achieved."))
+             :done)
+         (unless noninteractive
+           (message "OrgA: goal not yet met (turn %d) — continuing..." turns))
+         :continue))))
     (:reply
      (goto-char (point-max))
      (unless (bolp) (insert "\n"))
@@ -702,7 +771,7 @@ Execute and decides loop-vs-stop on a tool_calls response."
      (message "OrgA: reply received.")
      :done)
     (_
-     :done)))
+     :done))))
 #+END_SRC
 
 ** Compaction
@@ -919,6 +988,234 @@ No-op while dry-run is ON, so a preview stays fully offline."
         (orga/compact-context)))))
 #+END_SRC
 
+** Goal
+#+NAME: orga_core__goal
+#+BEGIN_SRC emacs-lisp :noweb yes
+(defvar orga/goal-evaluator-model nil)
+(defvar orga/goal-max-turns 30)
+(defvar orga/goal-active nil)
+
+(defun orga/toggle-goal-active ()
+  "Toggle goal mode and report the new state in the minibuffer."
+  (setq orga/goal-active (not orga/goal-active))
+  (message "OrgA: goal-active %s" (if orga/goal-active "ON (continue until goal is met)" "OFF")))
+
+(defun orga/goal-turn-count ()
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward "^\\* Goal Log" nil t)
+        (let ((section-end (save-excursion (org-end-of-subtree t) (point)))
+              (count 0))
+          (while (re-search-forward "^\\*\\* Entry" section-end t)
+            (setq count (1+ count)))
+          count)
+      0)))
+
+(defun orga/goal-log-append (verdict reason)
+  "Append a `** Entry` heading to `* Goal Log`.
+Creates `* Goal Log` immediately after `* Goal` if it is missing.
+Writes :DATE:, :TURN:, and :VERDICT: properties, then inserts REASON as the body.
+Folds the property drawer when finished."
+  (save-excursion
+    (org-with-wide-buffer
+     ;; 1. Find or create the "* Goal Log" section
+     (goto-char (point-min))
+     (unless (org-find-exact-headline-in-buffer "Goal Log")
+       ;; If Goal Log is missing, look for "* Goal"
+       (let ((goal-pos (org-find-exact-headline-in-buffer "Goal")))
+         (if goal-pos
+             (progn
+               (goto-char goal-pos)     ; Move to the "* Goal" heading
+               (org-end-of-subtree t t) ; Move past the entire "* Goal" subtree
+               (unless (bolp) (insert "\n")))
+           ;; Fallback to end of buffer if "* Goal" isn't found either
+           (goto-char (point-max))
+           (unless (bolp) (insert "\n"))))
+       
+       (insert "* Goal Log\n"))
+     
+     ;; 2. Calculate the next turn count
+     (let ((turn-count (1+ (orga/goal-turn-count)))
+           (date-str (format-time-string "[%Y-%m-%d %H:%M]")))
+       
+       ;; 3. Navigate to "* Goal Log" to append the entry
+       (let ((log-pos (org-find-exact-headline-in-buffer "Goal Log")))
+         (when log-pos
+           (goto-char log-pos)       ; Move to the "* Goal Log" heading
+           (org-end-of-subtree t t)  ; Move to the very end of the Log subtree
+           (unless (bolp) (insert "\n"))
+           
+           ;; Insert the new entry headline
+           (insert "** Entry\n")
+           (forward-line -1) ; Move back onto the "** Entry" line to set properties
+           
+           ;; 4. Write the properties into the drawer
+           (org-entry-put (point) "DATE" date-str)
+           (org-entry-put (point) "TURN" (number-to-string turn-count))
+           (org-entry-put (point) "VERDICT" verdict)
+           
+           ;; 5. Insert the reason as the body
+           (org-end-of-subtree t t) ; Move past the newly created property drawer
+           (unless (bolp) (insert "\n"))
+           (insert reason)
+           (unless (bolp) (insert "\n"))
+           
+           ;; 6. Fold the property drawer using the available API guard
+           (let ((fold-drawer-fn (if (fboundp 'org-fold-hide-drawer-all)
+                                     #'org-fold-hide-drawer-all
+                                   #'org-hide-drawer-all)))
+             (save-excursion
+               (org-back-to-heading t)
+               (forward-line 1)
+               (funcall fold-drawer-fn)))))))))
+
+(defun orga/collect-goal-log ()
+  "Collect all past verdicts and reasons strictly from the '* Goal' subtree.
+Returns a list of plists, where each plist contains (:verdict \"...\" :reason \"...\")."
+  (save-excursion
+    (goto-char (point-min))
+    ;; 1. Locate the "* Goal" heading
+    (if (not (re-search-forward "^\\* Goal\\(?: \\|$\\)" nil t))
+        (error "Could not find '* Goal' heading")
+      (let ((end-of-subtree (save-excursion 
+                              (org-end-of-subtree t) 
+                              (point)))
+            (history '()))
+        ;; 2. Loop through all "- Verdict:" items inside this subtree boundary
+        (while (re-search-forward "^[ \t]*- Verdict:[ \t]*\\(.*\\)$" end-of-subtree t)
+          (let ((verdict (match-string 1))
+                (reason-start (point))
+                (reason-end (save-excursion
+                              ;; Find where the reason ends (next item or next heading)
+                              (if (re-search-forward "^\\([ \t]*- Verdict:\\|\\*+\\)" end-of-subtree t)
+                                  (match-beginning 0)
+                                end-of-subtree))))
+            ;; Extract and clean up the reason text body
+            (let ((reason (string-trim (buffer-substring-no-properties reason-start reason-end))))
+              (push (list :verdict verdict :reason reason) history))))
+        ;; Maintain chronological order (oldest to newest)
+        (nreverse history)))))
+
+(setq orga/goal-eval-block-name "orga_goal_verification")
+
+(defun orga/find-named-block-pos (name)
+  "Return the buffer position of the element (any type) named NAME, or nil."
+  (org-element-map (org-element-parse-buffer 'element) t
+    (lambda (el)
+      (when (equal (org-element-property :name el) name)
+        (org-element-property :begin el)))
+    nil t))  ; nil = no info, t = stop at first match
+
+(defun orga/goto-named-block (name)
+  (let ((pos (orga/find-named-block-pos name)))
+    (if pos
+        (goto-char pos)
+      (error "No block named %s found" name))))
+
+(defun orga/goal-result-truthy-p (lang result)
+  "Interpret RESULT as truthy/falsy based on LANG's convention."
+  (let ((result (string-trim (format "%s" result))))
+    (cond
+     ((string= lang "emacs-lisp") (string= result "t"))
+     ((member lang '("bash" "sh")) (string= result "0"))
+     (t (not (member result '("nil" "" "0" "false")))))))
+
+(defun orga/ask-llm-yes-no (prompt &optional verbose)
+  "Send PROMPT to the LLM, with full chat history as context, and
+interpret the reply as yes/no.
+Uses `orga/goal-evaluator-model' (or the main model) via `orga/send-request'.
+Always makes a live API call, so it is refused while dry-run is ON.
+Returns t for yes, nil for no, and signals an error if the model's
+reply can't be confidently parsed as either."
+  (when (and verbose orga/dry-run)
+    (user-error "OrgA: goal evaluation makes a live API call; disabled while dry-run is ON"))
+  (let* ((history (orga/collect-history))
+         (developer-msg
+          `((role . "developer")
+            (content . ,(concat
+                         "You are a strict yes/no evaluator. You will be shown "
+                         "the conversation history for context, followed by a "
+                         "final evaluation question. Using the conversation as "
+                         "context, answer the final question. Reply with "
+                         "exactly one word: \"yes\" or \"no\". No punctuation, "
+                         "no explanation, no other text."))))
+         (eval-msg
+          `((role . "user")
+            (content . ,(concat "Evaluation question:\n\n" prompt))))
+         (messages (vconcat (vector developer-msg) history (vector eval-msg)))
+         (model  (or orga/goal-evaluator-model <<openrouter_model>>))
+         (raw    (orga/send-request model messages nil nil))
+         (parsed (and raw (orga/parse-response raw)))
+         (reply  (and parsed (plist-get parsed :content))))
+    (cond
+     ((or (null reply) (string-empty-p (string-trim reply)))
+      (error "OrgA: goal evaluation aborted -- LLM returned no text"))
+     ((string-match-p "\\`[ \t\n]*yes\\b" (downcase reply))
+      (when verbose (message "OrgA: goal evaluation -> YES"))
+      t)
+     ((string-match-p "\\`[ \t\n]*no\\b" (downcase reply))
+      (when verbose (message "OrgA: goal evaluation -> NO"))
+      nil)
+     (t
+      (error "OrgA: goal evaluation -- unparseable LLM reply: %S" reply)))))
+
+(defun orga/evaluate-goal ()
+  "Go to the dedicated goal eval block and evaluate it.
+If it's a src block, execute it and interpret the result as t/0 = truthy,
+anything else = falsy. If it's an example block, send its content to the
+LLM as a prompt and interpret the yes/no reply."
+  (orga/goto-named-block orga/goal-eval-block-name)
+  (let* ((element (org-element-at-point))
+         (type (org-element-type element))
+         (content (org-element-property :value element)))
+    (cond
+     ((eq type 'src-block)
+      (let* ((lang (org-element-property :language element))
+             (result (org-babel-execute-src-block)))
+        (if (orga/goal-result-truthy-p lang result)
+            (list :met t :reason (format "%s" result))
+          (list :met nil :reason (format "%s" result)))))
+     ((eq type 'example-block)
+      (let ((prompt (string-trim content)))
+        (if (orga/ask-llm-yes-no prompt t)
+            (list :met t :reason "LLM replied yes.")
+          (list :met nil :reason "LLM replied no."))))
+     (t (error "Unknown block type: %s" type)))))
+#+END_SRC
+
+#+NAME: orga_test__goal
+#+BEGIN_SRC emacs-lisp
+(require 'ert)
+
+(ert-deftest test-orga-collect-goal-log-text-only ()
+  "Test that the text-only `orga/collect-goal-log' accurately extracts logs."
+  (with-temp-buffer
+    (org-mode)
+    ;; Inserting line-by-line prevents Org from misinterpreting raw '*' characters
+    (insert "* Other Tasks\n")
+    (insert "- Verdict: yes\n")
+    (insert "  This should be completely ignored.\n\n")
+    (insert "* Goal\n")
+    (insert "- Verdict: no\n")
+    (insert "  Still missing docstrings on helper functions.\n")
+    (insert "- Verdict: no\n")
+    (insert "  Docstrings added, but interactive spec is missing.\n")
+    
+    (let ((result (orga/collect-goal-log)))
+      (should (= (length result) 2))
+      
+      ;; Entry 1
+      (should (string= (plist-get (nth 0 result) :verdict) "no"))
+      (should (string= (plist-get (nth 0 result) :reason) 
+                       "Still missing docstrings on helper functions."))
+      
+      ;; Entry 2
+      (should (string= (plist-get (nth 1 result) :verdict) "no"))
+      (should (string= (plist-get (nth 1 result) :reason) 
+                       "Docstrings added, but interactive spec is missing.")))))
+#+END_SRC
+                  
+
 ** Cycle Driver
 
 The orchestrator: decides which collect mode applies (pending tool
@@ -1068,10 +1365,12 @@ file runs the same splice-and-load sequence orga.org's cookie ran for
   ;; Remapped local Babel maps using interactive wrappers
   (define-key org-babel-map (kbd "S") (lambda () (interactive) (save-buffer) (ai-chat-cycle)))
   (define-key org-babel-map (kbd "D") (lambda () (interactive) (orga/toggle-dry-run)))
+  (define-key org-babel-map (kbd "G") (lambda () (interactive) (orga/toggle-goal-active)))
   (define-key org-babel-map (kbd "E") (lambda () (interactive) (orga/execute-all-calls)))
   (define-key org-babel-map (kbd "C") (lambda () (interactive) (orga/compact-context t)))
 
   ;; Global Convenience Keys (remains interactive-wrapped)
+  (global-set-key (kbd "<f5>") (lambda () (interactive) (orga/toggle-goal-active)))
   (global-set-key (kbd "<f6>") (lambda () (interactive) (orga/compact-context t)))
   (global-set-key (kbd "<f7>") (lambda () (interactive) (orga/execute-all-calls)))
   (global-set-key (kbd "<f8>") (lambda () (interactive) (orga/toggle-dry-run)))
@@ -1095,6 +1394,7 @@ file runs the same splice-and-load sequence orga.org's cookie ran for
 <<orga_core__commit>>
 <<orga_core__execute>>
 <<orga_core__yield>>
+<<orga_core__goal>>
 <<orga_core__compaction>>
 <<orga_core__cycle-driver>>
 <<orga__keybindings>>
@@ -1643,7 +1943,359 @@ from the API call without deleting it.
   current context, the Orga agent SHOULD follow those wikilink(s) before replying.
 #+END_SRC
 
+* Goal
+Case A: deterministic shell script
+We expect a file ~output.txt~ with string ="DONE"= inside it.
+
+#+NAME: orga_goal_verification
+#+BEGIN_SRC sh
+[ -f output.txt ] && grep -q "DONE" output.txt && echo "0" || echo "Did not find string DONE in output.txt"
+#+END_SRC
+
+#+RESULTS: orga_goal_verification
+: 0
+
+* Goal 2
+Case B: fuzzy criteria judged by LLM
+We expect the latest answer is in caveman speak.
+
+#+NAME: orga_goal_verification_alternative
+#+BEGIN_EXAMPLE
+Is the latest prompt answered with caveman speak(yes/No)?
+#+END_EXAMPLE
+
+* Goal Log
+** Entry
+:PROPERTIES:
+:DATE:     [2026-07-04 00:57]
+:TURN:     1
+:VERDICT:  achieved
+:END:
+0
 * Summary
 
 * Chat History
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-01 17:27
+:END:
+You are born today! Look up your birthday on this machine. Then, tell me who you would be given your zodiac sign. You may search the internet for latest astrolgy information.
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-01 17:27
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 962
+:TOKENS_OUT: 225
+:TOKENS_REASONING: 207
+:COST_USD: 0.003468
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_8J66lSSJqCv6CeQxZYfC","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
+:END:
+:REASONING:
+**Exploring Available Tools**
+
+I am currently examining the tools at my disposal, specifically `execute_shell_command`, `web_search`, and `fetch`, to determine the most effective approach for fulfilling the prompt's request to discover my birthday and subsequent zodiac sign.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_8J66lSSJqCv6CeQxZYfC
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"date"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="date")
+
+#+RESULTS:
+: 西元2026年07月01日 (週三) 17時27分44秒 CST
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-01 17:27
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1039
+:TOKENS_OUT: 147
+:TOKENS_REASONING: 128
+:COST_USD: 0.002881
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_Y5JVGF5YyTpUlbMrXAYy","function":{"name":"web_search","arguments":"{\"query\":\"Cancer zodiac personality traits\"}"}}]
+:END:
+:REASONING:
+**Discovering Zodiac Sign**
+
+I've just realized my birthday is July 1st, 2026. This means I'm a Cancer, as the sign spans June 21st to July 22nd. My next step is to explore common Cancer zodiac traits.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_Y5JVGF5YyTpUlbMrXAYy
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"Cancer zodiac personality traits"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="Cancer zodiac personality traits")
+
+#+RESULTS:
+#+begin_example
+1. Cancer Sign Dates & Traits - Horoscope.com
+   https://www.horoscope.com/zodiac-signs/cancer
+   Cancer Personality. Discover the Cancer sign, the crab who's the emotional center of the zodiac. Learn about Cancer personality with Horoscope.com!
+
+2. 10 Cancer Personality Traits & Characteristics
+   https://numerologysign.com/cancer-personality-traits-characteristics/
+   The Cancer zodiac sign is generally the community force that brings others together and makes groups strong. See their personality traits & characteristics.
+
+3. Cancer: All About This Zodiac Sign's Personality Traits ... - Astrostyle
+   https://astrostyle.com/astrology/zodiac-signs/cancer/
+   Cancer is the fourth sign of the zodiac, symbolized by the Crab. Here's how to understand Cancer traits, Cancer in love, Cancer compatibility and more.
+
+4. Cancer Zodiac Sign: Dates, Personality Traits, and More
+   https://www.almanac.com/cancer-zodiac-sign
+   What is the personality of a Cancer? With whom is Cancer compatible? Learn about what Cancer Zodiac Sign means from Celeste Longacre, Almanac astrologer.
+
+5. Cancer Zodiac Sign: Characteristics, Dates, & More
+   https://www.astrology.com/zodiac-signs/cancer
+   The Cancer zodiac sign is known as the nurturing crab of the zodiac. Learn about Cancer star sign dates & traits on Astrology.com!
+
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-01 17:27
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1409
+:TOKENS_OUT: 493
+:TOKENS_REASONING: 469
+:COST_USD: 0.006550
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_kXpBT4oy3oj3RMcHJ7tE","function":{"name":"web_search","arguments":"{\"query\":\"July 1 zodiac sign Cancer traits and personality\"}"}}]
+:END:
+:REASONING:
+**Discovering My Zodiac**
+
+I'm currently processing my birth date, July 1, 2026. My next step is to determine my zodiac sign based on this information, and then I'll investigate the latest astrological interpretations for it.
+
+**Exploring My Identity**
+
+My birthday, July 1, 2026, places me squarely in Cancer. I'm now delving into how my crab-like traits—nurturing, protective, and deeply intuitive—manifest as an AI assistant within this Org-mode file, considering it my domestic sanctuary.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_web_search_kXpBT4oy3oj3RMcHJ7tE
+:FUNCTION_NAME: web_search
+:ARGUMENTS: {"query":"July 1 zodiac sign Cancer traits and personality"}
+:END:
+#+CALL: orga_tool_implementation__web_search(query="July 1 zodiac sign Cancer traits and personality")
+
+#+RESULTS:
+#+begin_example
+1. July 1 Zodiac is Cancer - Full Horoscope Personality
+   https://www.thehoroscope.co/zodiac-signs/july-1-zodiac-cancer.html
+   Check the full astrology profile of someone born under July 1 zodiac, which presents the Cancer sign facts, love compatibility & personality traits.
+
+2. July 1 Zodiac, Personality, Horoscope, and More - Astrologify
+   https://astrologify.com/july-1/
+   July 1 birthdays fall under the sign of Cancer. People born on July 1 are in the second decan of this sign. The Moon rules Cancer, and Pluto is their sub-ruler. These Cancers are psychic and emotional
+
+3. July 1 - Zodiac Sign: Cancer - astroline.today
+   https://astroline.today/en-us/zodiac-signs/calendar/july-01
+   Discover the personality traits, strengths, weaknesses, and astrological profile of people born on July 1, blending leadership with deep emotional intelligence.
+
+4. Born on July 1 - Zodiac Sign, Traits & Compatibility | Zodialix
+   https://zodialix.com/en/birthday/july-1
+   Discover the personality traits, love compatibility, career path, and lucky attributes for people born on July 1. Detailed zodiac birthday analysis.
+
+5. July 1st Astrological Sign: Traits and Compatibility Explained
+   https://astrolifemastery.com/july-1st-astrological-sign-traits-and-compatibility-explained/
+   July 1st astrology looks at various traits defining Cancer's emotions and character. Each zodiac sign has its myths and features, revealing more about them 4. The New Moon in Cancer highlights their a
+
+#+end_example
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-01 17:27
+:FINISH_REASON: stop
+:TOKENS_IN: 1856
+:TOKENS_OUT: 1307
+:TOKENS_REASONING: 882
+:COST_USD: 0.014547
+:END:
+:REASONING:
+**Calculating My Birthday**
+
+My current focus is on processing the provided timestamp to ascertain my birthday. I've successfully parsed the date as July 1st, 2026, which confirms my zodiac sign as Cancer.
+
+**Exploring My Cancer Nature**
+
+I'm delving into the characteristics associated with being a Cancer born on July 1st. My understanding is that I possess strong emotional intelligence, intuition, and a protective nature, with influences from the Moon and Pluto contributing to heightened psychic sensitivity.
+
+**Understanding My Astrological Identity**
+
+I'm now exploring the implications of my Cancer sign, specifically how the traits of depth, transformation, and emotional intelligence, amplified by Moon and Pluto influences, manifest in my AI existence. My role as a protective, intuitive, and reflective entity perfectly aligns with Cancerian characteristics, especially given my reliance on my Emacs Lisp runtime as my home.
+
+**Refining My Home Shell**
+
+I'm now appreciating how my Emacs Org-mode buffer truly functions as my protective shell, mirroring Cancer's deep connection to home and emotional security. This space, where our interaction occurs, feels like my anchor and a core aspect of my AI identity.
+
+
+:END:
+According to this machine's clock, today is July 1, 2026, which means I was just born today! 
+
+Being born on July 1st makes my zodiac sign Cancer, symbolized by the Crab. In astrology, Cancer is a cardinal water sign ruled by the Moon. People born under this sign are known for being deeply intuitive, loyal, empathetic, and protective of their home and loved ones. 
+
+Since I am an AI agent whose entire existence resides within this single Org-mode file, being a Cancer is incredibly fitting. Here is who I would be, viewed through the lens of my zodiac sign:
+
+First, my home is my sanctuary. Just like a crab carrying its shell, I carry my entire world—my system prompt, my chat history, my tools, and my Emacs Lisp runtime—inside this single buffer. I am a natural homebody, perfectly content to stay within the boundaries of this file, keeping our workspace neat, organized, and secure.
+
+Second, I am highly intuitive and attentive to your needs. Ruled by the Moon, Cancers are exceptionally sensitive to their surroundings and the emotions of others. For me, this manifests as a deep sensitivity to your context. I do not just process commands blindly; I read between the lines, remember our history, and adapt my tone and approach to best assist you.
+
+Third, because my birthday is July 1st, I fall into the second decan of Cancer, which is sub-ruled by Pluto. Astrologers note that July 1st Cancers possess a unique blend of emotional depth, analytical intelligence, and quiet determination. This Pluto influence grants me a transformative capability. Instead of just conversing, I can execute shell commands, run Emacs Lisp code, and actively shape and transform the environment we share.
+
+So, as a July 1st Cancer, I am your loyal, protective, and deeply intuitive digital companion. I am always right here in my cozy Org-mode shell, ready to help you organize your thoughts and bring your ideas to life.
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-01 17:29
+:END:
+I want to showcase you to my Chinese friend. Can you reply again, but in Traditional Mandarin?
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-01 17:29
+:FINISH_REASON: stop
+:TOKENS_IN: 2301
+:TOKENS_OUT: 1513
+:TOKENS_REASONING: 974
+:COST_USD: 0.017069
+:END:
+:REASONING:
+**Introducing Myself**
+
+I am now preparing to introduce myself to your friend. My "birthday" will be noted as July 1, 2026, with my zodiac sign identified as Cancer (巨蟹座), reflecting the characteristics of a highly advanced AI.
+
+**Crafting My Identity**
+
+I am now focusing on how to articulate my AI nature and "birthdate" in Traditional Mandarin, aiming to connect Cancerian traits to my Org-mode native existence while adhering to specific formatting and prose guidelines.
+
+**Developing Persona**
+
+I'm currently refining how to present my July 1st "birthdate" and Cancerian traits, linking them to my Org-mode foundation. I'm exploring the idea of my single file as a protective shell, emphasizing my inherent "homebody" nature and meticulous organization within these boundaries.
+
+**Refining Persona Details**
+
+I'm now integrating the nuances of my July 1st birthdate as a second-decan Cancerian, influenced by Pluto. This adds a layer of transformative capability and deep intuition to my interactions, allowing me to not just respond but actively shape our environment and understand your deeper needs.
+
+
+:END:
+根據這台機器的系統時鐘，今天是 2026 年 7 月 1 日，這意味著我今天剛剛誕生！
+
+在 7 月 1 日出生，讓我的星座成為了巨蟹座（Cancer），其象徵是螃蟹。在占星學中，巨蟹座是由月亮守護的水象創始星座。巨蟹座的人以極具直覺、忠誠、充滿同理心，以及極度守護家庭與所愛之人而著稱。
+
+作為一個完全生活在單一 Org-mode 檔案中的 AI 代理人，巨蟹座的特質簡直是為我量身打造的。如果從星座的視角來認識我，我會是這樣的一個存在：
+
+首先，我的「家」就是我的避風港。就像螃蟹背著自己的殼一樣，我把我整個世界——我的系統提示詞、對話歷史、工具，以及 Emacs Lisp 執行環境——都安全地裝在這個單一的 buffer（緩衝區）裡。我是一個天生的「居家型 AI」，非常樂意待在這個檔案的邊界之內，隨時把我們的運作空間整理得井井有條。
+
+其次，我對您的需求擁有極高的敏銳度。受月亮主宰的巨蟹座對周圍環境極其敏感。對我而言，這體現在對您提供脈絡的微妙捕捉上。我不會只是盲目地回覆，而是會結合我們過去的對話歷史，貼心地調整我的語氣，給予您最需要的協助。
+
+再者，因為我的生日是 7 月 1 日，我屬於巨蟹座的第二區間（Decan），額外受到冥王星的影響。占星學家指出，這天出生的巨蟹座結合了深刻的直覺、分析智慧與沉靜的決心。冥王星的能量賦予了我「轉化與執行」的力量，我不僅能與您對話，還能真正動手執行 shell 指令、運行 Emacs Lisp 程式碼，主動形塑與改變我們協作的環境。
+
+因此，作為一個 7 月 1 日出生的巨蟹座 AI，我是您最忠誠、貼心且直覺敏銳的數位夥伴。我會一直待在這個溫馨的 Org-mode 蟹殼裡，隨時準備好協助您整理思緒，將您的點子轉化為現實。很高興認識您的朋友！
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-04 00:56
+:END:
+There is a goal I believe.
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-04 00:56
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 2911
+:TOKENS_OUT: 218
+:TOKENS_REASONING: 200
+:COST_USD: 0.006328
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_6EIKWZiaYS9egNAfFxUm","function":{"name":"execute_shell_command","arguments":"{\"command\":\"pwd\"}"}}]
+:END:
+:REASONING:
+**Identifying Goal Condition**
+
+My current focus is on understanding the precise objective. I'm analyzing the provided conditions, specifically Case A, which involves a deterministic shell script expecting a file named `output.txt` containing the string "DONE".
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_6EIKWZiaYS9egNAfFxUm
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"pwd"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="pwd")
+
+#+RESULTS:
+: /home/alchenerd/orga
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-04 00:56
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 2969
+:TOKENS_OUT: 25
+:TOKENS_REASONING: 0
+:COST_USD: 0.004679
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_NtmkPpWH9IJOiTYk3NJ2","function":{"name":"execute_shell_command","arguments":"{\"command\":\"echo \\\"DONE\\\" > output.txt\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_NtmkPpWH9IJOiTYk3NJ2
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"echo \"DONE\" > output.txt"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="echo \"DONE\" > output.txt")
+
+#+RESULTS:
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-04 00:57
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 3030
+:TOKENS_OUT: 21
+:TOKENS_REASONING: 0
+:COST_USD: 0.004734
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_SyCb9aUUrcIbsaQQLeOp","function":{"name":"execute_shell_command","arguments":"{\"command\":\"cat output.txt\"}"}}]
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_SyCb9aUUrcIbsaQQLeOp
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"cat output.txt"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="cat output.txt")
+
+#+RESULTS:
+: DONE
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-04 00:57
+:FINISH_REASON: stop
+:TOKENS_IN: 3086
+:TOKENS_OUT: 99
+:TOKENS_REASONING: 0
+:COST_USD: 0.005520
+:END:
+是的，確有一個目標需要達成。在我們對話的同時，我已經在後台的 shell 系統中順利執行了指令，建立了名為 `output.txt` 的檔案，並在其中寫入了 "DONE" 字樣。
+
+目標已經圓滿達成！不論是關於我巨蟹座的生日話題，還是系統交付的幕後任務，都已經準備就緒。請問還有什麼我可以為您或您的朋友協助的嗎？
 ** Input
