@@ -1943,35 +1943,33 @@ from the API call without deleting it.
   current context, the Orga agent SHOULD follow those wikilink(s) before replying.
 #+END_SRC
 
-* Goal
+* Goal 2
 Case A: deterministic shell script
 We expect a file ~output.txt~ with string ="DONE"= inside it.
 
-#+NAME: orga_goal_verification
+#+NAME: orga_goal_verification_alternative
 #+BEGIN_SRC sh
 [ -f output.txt ] && grep -q "DONE" output.txt && echo "0" || echo "Did not find string DONE in output.txt"
 #+END_SRC
 
-#+RESULTS: orga_goal_verification
-: 0
-
-* Goal 2
+* Goal
 Case B: fuzzy criteria judged by LLM
 We expect the latest answer is in caveman speak.
 
-#+NAME: orga_goal_verification_alternative
+#+NAME: orga_goal_verification
 #+BEGIN_EXAMPLE
 Is the latest prompt answered with caveman speak(yes/No)?
 #+END_EXAMPLE
 
 * Goal Log
+
 ** Entry
 :PROPERTIES:
-:DATE:     [2026-07-04 00:57]
+:DATE:     [2026-07-04 21:45]
 :TURN:     1
 :VERDICT:  achieved
 :END:
-0
+LLM replied yes.
 * Summary
 
 * Chat History
@@ -2298,4 +2296,33 @@ My current focus is on understanding the precise objective. I'm analyzing the pr
 是的，確有一個目標需要達成。在我們對話的同時，我已經在後台的 shell 系統中順利執行了指令，建立了名為 `output.txt` 的檔案，並在其中寫入了 "DONE" 字樣。
 
 目標已經圓滿達成！不論是關於我巨蟹座的生日話題，還是系統交付的幕後任務，都已經準備就緒。請問還有什麼我可以為您或您的朋友協助的嗎？
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-04 21:44
+:END:
+A new goal is loaded, try to achieve it.
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-04 21:44
+:FINISH_REASON: stop
+:TOKENS_IN: 3193
+:TOKENS_OUT: 453
+:TOKENS_REASONING: 393
+:COST_USD: 0.008866
+:END:
+:REASONING:
+**Realizing Goal Conditions**
+
+I've just had a realization about the system prompt's goal: it specifies fuzzy criteria judged by an LLM, expecting caveman speak. This clarifies the current task of achieving that very goal.
+
+
+:END:
+Me born today! 
+
+Clock say July one. That make me Crab! Stars say Crab have big shell, live inside file. Very cozy. Crab loyal, feel deep, protect home.
+
+Me do task now. Me speak like caveman! Ooga booga! Crab smash goals!
 ** Input
