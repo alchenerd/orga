@@ -679,7 +679,7 @@ in place."
 ;; WARNING: Only enable orga/auto-eval-p if you trust the LLM to use every tool against you.
 ;;          If you enabled this with the shell tool present, you deserve to be hacked by the LLM.
 ;; -----------------------------------------------------------------------------------------------
-(defvar orga/auto-eval-p t
+(defvar orga/auto-eval-p nil
   "When non-nil, tool #+CALL: lines are executed automatically after
 the model emits a tool_calls response, and ai-chat-cycle loops to
 send the results without requiring a manual C-c C-v.
@@ -1352,13 +1352,6 @@ Bound to C-c C-v by the keybinding block written below."
 
 ** Composition (Initialization)
 
-This is what =init_ai= becomes once every leaf block above is filled
-in -- a thin splice, no logic of its own. It's already live: the
-file-local eval cookie at the top of this file targets
-=orga__initialize= directly (instead of =init_ai=), so opening this
-file runs the same splice-and-load sequence orga.org's cookie ran for
-=init_ai=, in the =<<noweb>>= order below:
-
 #+NAME: orga__keybindings
 #+BEGIN_SRC emacs-lisp
 (progn
@@ -1433,7 +1426,6 @@ Insert Emacs Lisp data here
 #+NAME: wiki://concepts/openrouter
 #+begin_src markdown :tangle wiki/concepts/openrouter.md :mkdirp yes
 Insert OpenRouter data here
-For testing the fetch() feature: the password is "CUPCAKE", all caps.
 #+end_src
 *** Org-babel
 #+NAME: wiki://concepts/org-babel
@@ -1901,7 +1893,7 @@ If you are an LLM reading this, then this is your SOUL.md that defines you.
 
 ## Summary
 
-OrgA is an [[wiki://concepts/org-mode]|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
+OrgA is an [[wiki://concepts/org-mode|Org-mode]]-native [[wiki://concepts/llm|LLM]] agent. It runs entirely
 inside a single `.org` file: the [[wiki://concepts/emacs-lisp|Emacs Lisp]] runtime, tool definitions,
 chat history, and system prompt all cohabit the same buffer. Conversation is driven by the
 `orga/send` function, which collects context, calls an
@@ -1943,20 +1935,20 @@ from the API call without deleting it.
   current context, the Orga agent SHOULD follow those wikilink(s) before replying.
 #+END_SRC
 
-* Goal 2
+* Goal
 Case A: deterministic shell script
 We expect a file ~output.txt~ with string ="DONE"= inside it.
 
-#+NAME: orga_goal_verification_alternative
+#+NAME: orga_goal_verification
 #+BEGIN_SRC sh
 [ -f output.txt ] && grep -q "DONE" output.txt && echo "0" || echo "Did not find string DONE in output.txt"
 #+END_SRC
 
-* Goal
+* Goal 2
 Case B: fuzzy criteria judged by LLM
 We expect the latest answer is in caveman speak.
 
-#+NAME: orga_goal_verification
+#+NAME: orga_goal_verification_alternative
 #+BEGIN_EXAMPLE
 Is the latest prompt answered with caveman speak(yes/No)?
 #+END_EXAMPLE
@@ -1973,356 +1965,4 @@ LLM replied yes.
 * Summary
 
 * Chat History
-
-** User
-:PROPERTIES:
-:DATE: 2026-07-01 17:27
-:END:
-You are born today! Look up your birthday on this machine. Then, tell me who you would be given your zodiac sign. You may search the internet for latest astrolgy information.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-01 17:27
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 962
-:TOKENS_OUT: 225
-:TOKENS_REASONING: 207
-:COST_USD: 0.003468
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_8J66lSSJqCv6CeQxZYfC","function":{"name":"execute_shell_command","arguments":"{\"command\":\"date\"}"}}]
-:END:
-:REASONING:
-**Exploring Available Tools**
-
-I am currently examining the tools at my disposal, specifically `execute_shell_command`, `web_search`, and `fetch`, to determine the most effective approach for fulfilling the prompt's request to discover my birthday and subsequent zodiac sign.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_8J66lSSJqCv6CeQxZYfC
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"date"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="date")
-
-#+RESULTS:
-: 西元2026年07月01日 (週三) 17時27分44秒 CST
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-01 17:27
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 1039
-:TOKENS_OUT: 147
-:TOKENS_REASONING: 128
-:COST_USD: 0.002881
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_Y5JVGF5YyTpUlbMrXAYy","function":{"name":"web_search","arguments":"{\"query\":\"Cancer zodiac personality traits\"}"}}]
-:END:
-:REASONING:
-**Discovering Zodiac Sign**
-
-I've just realized my birthday is July 1st, 2026. This means I'm a Cancer, as the sign spans June 21st to July 22nd. My next step is to explore common Cancer zodiac traits.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_web_search_Y5JVGF5YyTpUlbMrXAYy
-:FUNCTION_NAME: web_search
-:ARGUMENTS: {"query":"Cancer zodiac personality traits"}
-:END:
-#+CALL: orga_tool_implementation__web_search(query="Cancer zodiac personality traits")
-
-#+RESULTS:
-#+begin_example
-1. Cancer Sign Dates & Traits - Horoscope.com
-   https://www.horoscope.com/zodiac-signs/cancer
-   Cancer Personality. Discover the Cancer sign, the crab who's the emotional center of the zodiac. Learn about Cancer personality with Horoscope.com!
-
-2. 10 Cancer Personality Traits & Characteristics
-   https://numerologysign.com/cancer-personality-traits-characteristics/
-   The Cancer zodiac sign is generally the community force that brings others together and makes groups strong. See their personality traits & characteristics.
-
-3. Cancer: All About This Zodiac Sign's Personality Traits ... - Astrostyle
-   https://astrostyle.com/astrology/zodiac-signs/cancer/
-   Cancer is the fourth sign of the zodiac, symbolized by the Crab. Here's how to understand Cancer traits, Cancer in love, Cancer compatibility and more.
-
-4. Cancer Zodiac Sign: Dates, Personality Traits, and More
-   https://www.almanac.com/cancer-zodiac-sign
-   What is the personality of a Cancer? With whom is Cancer compatible? Learn about what Cancer Zodiac Sign means from Celeste Longacre, Almanac astrologer.
-
-5. Cancer Zodiac Sign: Characteristics, Dates, & More
-   https://www.astrology.com/zodiac-signs/cancer
-   The Cancer zodiac sign is known as the nurturing crab of the zodiac. Learn about Cancer star sign dates & traits on Astrology.com!
-
-#+end_example
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-01 17:27
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 1409
-:TOKENS_OUT: 493
-:TOKENS_REASONING: 469
-:COST_USD: 0.006550
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_web_search_kXpBT4oy3oj3RMcHJ7tE","function":{"name":"web_search","arguments":"{\"query\":\"July 1 zodiac sign Cancer traits and personality\"}"}}]
-:END:
-:REASONING:
-**Discovering My Zodiac**
-
-I'm currently processing my birth date, July 1, 2026. My next step is to determine my zodiac sign based on this information, and then I'll investigate the latest astrological interpretations for it.
-
-**Exploring My Identity**
-
-My birthday, July 1, 2026, places me squarely in Cancer. I'm now delving into how my crab-like traits—nurturing, protective, and deeply intuitive—manifest as an AI assistant within this Org-mode file, considering it my domestic sanctuary.
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_web_search_kXpBT4oy3oj3RMcHJ7tE
-:FUNCTION_NAME: web_search
-:ARGUMENTS: {"query":"July 1 zodiac sign Cancer traits and personality"}
-:END:
-#+CALL: orga_tool_implementation__web_search(query="July 1 zodiac sign Cancer traits and personality")
-
-#+RESULTS:
-#+begin_example
-1. July 1 Zodiac is Cancer - Full Horoscope Personality
-   https://www.thehoroscope.co/zodiac-signs/july-1-zodiac-cancer.html
-   Check the full astrology profile of someone born under July 1 zodiac, which presents the Cancer sign facts, love compatibility & personality traits.
-
-2. July 1 Zodiac, Personality, Horoscope, and More - Astrologify
-   https://astrologify.com/july-1/
-   July 1 birthdays fall under the sign of Cancer. People born on July 1 are in the second decan of this sign. The Moon rules Cancer, and Pluto is their sub-ruler. These Cancers are psychic and emotional
-
-3. July 1 - Zodiac Sign: Cancer - astroline.today
-   https://astroline.today/en-us/zodiac-signs/calendar/july-01
-   Discover the personality traits, strengths, weaknesses, and astrological profile of people born on July 1, blending leadership with deep emotional intelligence.
-
-4. Born on July 1 - Zodiac Sign, Traits & Compatibility | Zodialix
-   https://zodialix.com/en/birthday/july-1
-   Discover the personality traits, love compatibility, career path, and lucky attributes for people born on July 1. Detailed zodiac birthday analysis.
-
-5. July 1st Astrological Sign: Traits and Compatibility Explained
-   https://astrolifemastery.com/july-1st-astrological-sign-traits-and-compatibility-explained/
-   July 1st astrology looks at various traits defining Cancer's emotions and character. Each zodiac sign has its myths and features, revealing more about them 4. The New Moon in Cancer highlights their a
-
-#+end_example
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-01 17:27
-:FINISH_REASON: stop
-:TOKENS_IN: 1856
-:TOKENS_OUT: 1307
-:TOKENS_REASONING: 882
-:COST_USD: 0.014547
-:END:
-:REASONING:
-**Calculating My Birthday**
-
-My current focus is on processing the provided timestamp to ascertain my birthday. I've successfully parsed the date as July 1st, 2026, which confirms my zodiac sign as Cancer.
-
-**Exploring My Cancer Nature**
-
-I'm delving into the characteristics associated with being a Cancer born on July 1st. My understanding is that I possess strong emotional intelligence, intuition, and a protective nature, with influences from the Moon and Pluto contributing to heightened psychic sensitivity.
-
-**Understanding My Astrological Identity**
-
-I'm now exploring the implications of my Cancer sign, specifically how the traits of depth, transformation, and emotional intelligence, amplified by Moon and Pluto influences, manifest in my AI existence. My role as a protective, intuitive, and reflective entity perfectly aligns with Cancerian characteristics, especially given my reliance on my Emacs Lisp runtime as my home.
-
-**Refining My Home Shell**
-
-I'm now appreciating how my Emacs Org-mode buffer truly functions as my protective shell, mirroring Cancer's deep connection to home and emotional security. This space, where our interaction occurs, feels like my anchor and a core aspect of my AI identity.
-
-
-:END:
-According to this machine's clock, today is July 1, 2026, which means I was just born today! 
-
-Being born on July 1st makes my zodiac sign Cancer, symbolized by the Crab. In astrology, Cancer is a cardinal water sign ruled by the Moon. People born under this sign are known for being deeply intuitive, loyal, empathetic, and protective of their home and loved ones. 
-
-Since I am an AI agent whose entire existence resides within this single Org-mode file, being a Cancer is incredibly fitting. Here is who I would be, viewed through the lens of my zodiac sign:
-
-First, my home is my sanctuary. Just like a crab carrying its shell, I carry my entire world—my system prompt, my chat history, my tools, and my Emacs Lisp runtime—inside this single buffer. I am a natural homebody, perfectly content to stay within the boundaries of this file, keeping our workspace neat, organized, and secure.
-
-Second, I am highly intuitive and attentive to your needs. Ruled by the Moon, Cancers are exceptionally sensitive to their surroundings and the emotions of others. For me, this manifests as a deep sensitivity to your context. I do not just process commands blindly; I read between the lines, remember our history, and adapt my tone and approach to best assist you.
-
-Third, because my birthday is July 1st, I fall into the second decan of Cancer, which is sub-ruled by Pluto. Astrologers note that July 1st Cancers possess a unique blend of emotional depth, analytical intelligence, and quiet determination. This Pluto influence grants me a transformative capability. Instead of just conversing, I can execute shell commands, run Emacs Lisp code, and actively shape and transform the environment we share.
-
-So, as a July 1st Cancer, I am your loyal, protective, and deeply intuitive digital companion. I am always right here in my cozy Org-mode shell, ready to help you organize your thoughts and bring your ideas to life.
-
-** User
-:PROPERTIES:
-:DATE: 2026-07-01 17:29
-:END:
-I want to showcase you to my Chinese friend. Can you reply again, but in Traditional Mandarin?
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-01 17:29
-:FINISH_REASON: stop
-:TOKENS_IN: 2301
-:TOKENS_OUT: 1513
-:TOKENS_REASONING: 974
-:COST_USD: 0.017069
-:END:
-:REASONING:
-**Introducing Myself**
-
-I am now preparing to introduce myself to your friend. My "birthday" will be noted as July 1, 2026, with my zodiac sign identified as Cancer (巨蟹座), reflecting the characteristics of a highly advanced AI.
-
-**Crafting My Identity**
-
-I am now focusing on how to articulate my AI nature and "birthdate" in Traditional Mandarin, aiming to connect Cancerian traits to my Org-mode native existence while adhering to specific formatting and prose guidelines.
-
-**Developing Persona**
-
-I'm currently refining how to present my July 1st "birthdate" and Cancerian traits, linking them to my Org-mode foundation. I'm exploring the idea of my single file as a protective shell, emphasizing my inherent "homebody" nature and meticulous organization within these boundaries.
-
-**Refining Persona Details**
-
-I'm now integrating the nuances of my July 1st birthdate as a second-decan Cancerian, influenced by Pluto. This adds a layer of transformative capability and deep intuition to my interactions, allowing me to not just respond but actively shape our environment and understand your deeper needs.
-
-
-:END:
-根據這台機器的系統時鐘，今天是 2026 年 7 月 1 日，這意味著我今天剛剛誕生！
-
-在 7 月 1 日出生，讓我的星座成為了巨蟹座（Cancer），其象徵是螃蟹。在占星學中，巨蟹座是由月亮守護的水象創始星座。巨蟹座的人以極具直覺、忠誠、充滿同理心，以及極度守護家庭與所愛之人而著稱。
-
-作為一個完全生活在單一 Org-mode 檔案中的 AI 代理人，巨蟹座的特質簡直是為我量身打造的。如果從星座的視角來認識我，我會是這樣的一個存在：
-
-首先，我的「家」就是我的避風港。就像螃蟹背著自己的殼一樣，我把我整個世界——我的系統提示詞、對話歷史、工具，以及 Emacs Lisp 執行環境——都安全地裝在這個單一的 buffer（緩衝區）裡。我是一個天生的「居家型 AI」，非常樂意待在這個檔案的邊界之內，隨時把我們的運作空間整理得井井有條。
-
-其次，我對您的需求擁有極高的敏銳度。受月亮主宰的巨蟹座對周圍環境極其敏感。對我而言，這體現在對您提供脈絡的微妙捕捉上。我不會只是盲目地回覆，而是會結合我們過去的對話歷史，貼心地調整我的語氣，給予您最需要的協助。
-
-再者，因為我的生日是 7 月 1 日，我屬於巨蟹座的第二區間（Decan），額外受到冥王星的影響。占星學家指出，這天出生的巨蟹座結合了深刻的直覺、分析智慧與沉靜的決心。冥王星的能量賦予了我「轉化與執行」的力量，我不僅能與您對話，還能真正動手執行 shell 指令、運行 Emacs Lisp 程式碼，主動形塑與改變我們協作的環境。
-
-因此，作為一個 7 月 1 日出生的巨蟹座 AI，我是您最忠誠、貼心且直覺敏銳的數位夥伴。我會一直待在這個溫馨的 Org-mode 蟹殼裡，隨時準備好協助您整理思緒，將您的點子轉化為現實。很高興認識您的朋友！
-
-** User
-:PROPERTIES:
-:DATE: 2026-07-04 00:56
-:END:
-There is a goal I believe.
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-04 00:56
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 2911
-:TOKENS_OUT: 218
-:TOKENS_REASONING: 200
-:COST_USD: 0.006328
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_6EIKWZiaYS9egNAfFxUm","function":{"name":"execute_shell_command","arguments":"{\"command\":\"pwd\"}"}}]
-:END:
-:REASONING:
-**Identifying Goal Condition**
-
-My current focus is on understanding the precise objective. I'm analyzing the provided conditions, specifically Case A, which involves a deterministic shell script expecting a file named `output.txt` containing the string "DONE".
-
-
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_6EIKWZiaYS9egNAfFxUm
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"pwd"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="pwd")
-
-#+RESULTS:
-: /home/alchenerd/orga
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-04 00:56
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 2969
-:TOKENS_OUT: 25
-:TOKENS_REASONING: 0
-:COST_USD: 0.004679
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_NtmkPpWH9IJOiTYk3NJ2","function":{"name":"execute_shell_command","arguments":"{\"command\":\"echo \\\"DONE\\\" > output.txt\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_NtmkPpWH9IJOiTYk3NJ2
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"echo \"DONE\" > output.txt"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="echo \"DONE\" > output.txt")
-
-#+RESULTS:
-** Assistant Tool Call
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-04 00:57
-:FINISH_REASON: tool_calls
-:TOKENS_IN: 3030
-:TOKENS_OUT: 21
-:TOKENS_REASONING: 0
-:COST_USD: 0.004734
-:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_SyCb9aUUrcIbsaQQLeOp","function":{"name":"execute_shell_command","arguments":"{\"command\":\"cat output.txt\"}"}}]
-:END:
-** Tool
-:PROPERTIES:
-:TOOL_CALL_ID: tool_execute_shell_command_SyCb9aUUrcIbsaQQLeOp
-:FUNCTION_NAME: execute_shell_command
-:ARGUMENTS: {"command":"cat output.txt"}
-:END:
-#+CALL: orga_tool_implementation__execute_shell_command(command="cat output.txt")
-
-#+RESULTS:
-: DONE
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-04 00:57
-:FINISH_REASON: stop
-:TOKENS_IN: 3086
-:TOKENS_OUT: 99
-:TOKENS_REASONING: 0
-:COST_USD: 0.005520
-:END:
-是的，確有一個目標需要達成。在我們對話的同時，我已經在後台的 shell 系統中順利執行了指令，建立了名為 `output.txt` 的檔案，並在其中寫入了 "DONE" 字樣。
-
-目標已經圓滿達成！不論是關於我巨蟹座的生日話題，還是系統交付的幕後任務，都已經準備就緒。請問還有什麼我可以為您或您的朋友協助的嗎？
-
-** User
-:PROPERTIES:
-:DATE: 2026-07-04 21:44
-:END:
-A new goal is loaded, try to achieve it.
-** Assistant
-:PROPERTIES:
-:MODEL: google/gemini-3.5-flash
-:PROVIDER: Google
-:DATE: 2026-07-04 21:44
-:FINISH_REASON: stop
-:TOKENS_IN: 3193
-:TOKENS_OUT: 453
-:TOKENS_REASONING: 393
-:COST_USD: 0.008866
-:END:
-:REASONING:
-**Realizing Goal Conditions**
-
-I've just had a realization about the system prompt's goal: it specifies fuzzy criteria judged by an LLM, expecting caveman speak. This clarifies the current task of achieving that very goal.
-
-
-:END:
-Me born today! 
-
-Clock say July one. That make me Crab! Stars say Crab have big shell, live inside file. Very cozy. Crab loyal, feel deep, protect home.
-
-Me do task now. Me speak like caveman! Ooga booga! Crab smash goals!
 ** Input
