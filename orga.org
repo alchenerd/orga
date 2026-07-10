@@ -263,7 +263,10 @@ Fills a plist of named slots, then concatenates them in the order
 declared by `orga/context-slot-order'.
 
 Current slots:
-  :system   – persistent system prompt (empty for now)
+  :system   – persistent system prompt, from * System Prompt
+  :goal     – active goal directive + past evaluator feedback, when
+              `orga/goal-active' is non-nil
+  :summary  – cumulative recap of turns folded by compaction
   :history  – chat history collected from * Chat History"
   (let (slots) ; plist: (:slot-name vector-of-messages ...)
 
@@ -1070,30 +1073,21 @@ Folds the property drawer when finished."
                (funcall fold-drawer-fn)))))))))
 
 (defun orga/collect-goal-log ()
-  "Collect all past verdicts and reasons strictly from the '* Goal' subtree.
-Returns a list of plists, where each plist contains (:verdict \"...\" :reason \"...\")."
+  "Collect all past verdicts and reasons from the '* Goal Log' subtree.
+Returns a list of plists, oldest first, each shaped
+\(:verdict \"...\" :reason \"...\"), read from every '** Entry' heading's
+:VERDICT: property and subtree body -- i.e. the exact format written by
+`orga/goal-log-append'.  Returns nil (not an error) when '* Goal Log' does
+not exist yet, since that is the normal state before the first turn."
   (save-excursion
     (goto-char (point-min))
-    ;; 1. Locate the "* Goal" heading
-    (if (not (re-search-forward "^\\* Goal\\(?: \\|$\\)" nil t))
-        (error "Could not find '* Goal' heading")
-      (let ((end-of-subtree (save-excursion 
-                              (org-end-of-subtree t) 
-                              (point)))
+    (when (re-search-forward "^\\* Goal Log" nil t)
+      (let ((section-end (save-excursion (org-end-of-subtree t) (point)))
             (history '()))
-        ;; 2. Loop through all "- Verdict:" items inside this subtree boundary
-        (while (re-search-forward "^[ \t]*- Verdict:[ \t]*\\(.*\\)$" end-of-subtree t)
-          (let ((verdict (match-string 1))
-                (reason-start (point))
-                (reason-end (save-excursion
-                              ;; Find where the reason ends (next item or next heading)
-                              (if (re-search-forward "^\\([ \t]*- Verdict:\\|\\*+\\)" end-of-subtree t)
-                                  (match-beginning 0)
-                                end-of-subtree))))
-            ;; Extract and clean up the reason text body
-            (let ((reason (string-trim (buffer-substring-no-properties reason-start reason-end))))
-              (push (list :verdict verdict :reason reason) history))))
-        ;; Maintain chronological order (oldest to newest)
+        (while (re-search-forward "^\\*\\* Entry" section-end t)
+          (let ((verdict (or (org-entry-get (point) "VERDICT") ""))
+                (reason  (orga/subtree-body)))
+            (push (list :verdict verdict :reason reason) history)))
         (nreverse history)))))
 
 (setq orga/goal-eval-block-name "orga_goal_verification")
@@ -1187,32 +1181,52 @@ LLM as a prompt and interpret the yes/no reply."
 #+BEGIN_SRC emacs-lisp
 (require 'ert)
 
-(ert-deftest test-orga-collect-goal-log-text-only ()
-  "Test that the text-only `orga/collect-goal-log' accurately extracts logs."
+(ert-deftest test-orga-collect-goal-log-entries ()
+  "Test that `orga/collect-goal-log' extracts real ** Entry / :VERDICT: logs,
+i.e. the exact format `orga/goal-log-append' writes."
   (with-temp-buffer
     (org-mode)
     ;; Inserting line-by-line prevents Org from misinterpreting raw '*' characters
-    (insert "* Other Tasks\n")
-    (insert "- Verdict: yes\n")
-    (insert "  This should be completely ignored.\n\n")
     (insert "* Goal\n")
-    (insert "- Verdict: no\n")
-    (insert "  Still missing docstrings on helper functions.\n")
-    (insert "- Verdict: no\n")
-    (insert "  Docstrings added, but interactive spec is missing.\n")
-    
+    (insert "Some goal text.\n\n")
+    (insert "* Goal Log\n\n")
+    (insert "** Entry\n")
+    (insert ":PROPERTIES:\n")
+    (insert ":DATE:     [2026-07-04 21:00]\n")
+    (insert ":TURN:     1\n")
+    (insert ":VERDICT:  no\n")
+    (insert ":END:\n")
+    (insert "Still missing docstrings on helper functions.\n\n")
+    (insert "** Entry\n")
+    (insert ":PROPERTIES:\n")
+    (insert ":DATE:     [2026-07-04 21:10]\n")
+    (insert ":TURN:     2\n")
+    (insert ":VERDICT:  no\n")
+    (insert ":END:\n")
+    (insert "Docstrings added, but interactive spec is missing.\n\n")
+    (insert "* Chat History\n")
+
     (let ((result (orga/collect-goal-log)))
       (should (= (length result) 2))
-      
+
       ;; Entry 1
       (should (string= (plist-get (nth 0 result) :verdict) "no"))
-      (should (string= (plist-get (nth 0 result) :reason) 
+      (should (string= (plist-get (nth 0 result) :reason)
                        "Still missing docstrings on helper functions."))
-      
+
       ;; Entry 2
       (should (string= (plist-get (nth 1 result) :verdict) "no"))
-      (should (string= (plist-get (nth 1 result) :reason) 
+      (should (string= (plist-get (nth 1 result) :reason)
                        "Docstrings added, but interactive spec is missing.")))))
+
+(ert-deftest test-orga-collect-goal-log-absent-returns-nil ()
+  "Before the first evaluation, '* Goal Log' does not exist yet.
+`orga/collect-goal-log' must return nil quietly, not error -- otherwise
+the very first turn under an active goal would fail to assemble context."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Goal\nSome goal text.\n")
+    (should (null (orga/collect-goal-log)))))
 #+END_SRC
                   
 
@@ -1944,6 +1958,9 @@ We expect a file ~output.txt~ with string ="DONE"= inside it.
 [ -f output.txt ] && grep -q "DONE" output.txt && echo "0" || echo "Did not find string DONE in output.txt"
 #+END_SRC
 
+#+RESULTS: orga_goal_verification
+: 0
+
 * Goal 2
 Case B: fuzzy criteria judged by LLM
 We expect the latest answer is in caveman speak.
@@ -1957,12 +1974,229 @@ Is the latest prompt answered with caveman speak(yes/No)?
 
 ** Entry
 :PROPERTIES:
-:DATE:     [2026-07-04 21:45]
+:DATE:     [2026-07-11 00:10]
 :TURN:     1
+:VERDICT:  no
+:END:
+Did not find string DONE in output.txt
+** Entry
+:PROPERTIES:
+:DATE:     [2026-07-11 00:12]
+:TURN:     2
 :VERDICT:  achieved
 :END:
-LLM replied yes.
+0
+** Entry
+:PROPERTIES:
+:DATE:     [2026-07-11 00:12]
+:TURN:     3
+:VERDICT:  achieved
+:END:
+0
 * Summary
 
 * Chat History
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-11 00:09
+:END:
+There is a goal spcified previously in the context. I want you to do it in a BDD fashion: 1. create a test regarding the goal, 2. make sure the test is failing, 3. create a source file that makes the test pass. In between the stages, yield the control to the user to fail on purpose.
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:09
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1061
+:TOKENS_OUT: 405
+:TOKENS_REASONING: 385
+:COST_USD: 0.005236
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_Gz25uteO6b8IL1432uxF","function":{"name":"execute_shell_command","arguments":"{\"command\":\"ls -la\"}"}}]
+:END:
+:REASONING:
+**Developing BDD Workflow**
+
+I'm currently focusing on implementing the requested BDD workflow. My immediate next step is to define the initial test case for the previously specified goal, ensuring it fails before proceeding to write the source code that will satisfy it.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_Gz25uteO6b8IL1432uxF
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"ls -la"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="ls -la")
+
+#+RESULTS:
+#+begin_example
+total 240
+drwxr-xr-x  3 alchenerd alchenerd  4096  7月 10 23:43 .
+drwx------ 77 alchenerd alchenerd  4096  7月 10 23:39 ..
+-rw-r--r--  1 alchenerd alchenerd    93  6月  5 22:15 .env
+drwxr-xr-x  7 alchenerd alchenerd  4096  7月 11 00:08 .git
+-rw-r--r--  1 alchenerd alchenerd    23  7月  5 22:30 .gitignore
+-rw-r--r--  1 alchenerd alchenerd 35149  6月  5 22:13 LICENSE
+-rw-r--r--  1 alchenerd alchenerd 85947  7月  5 22:33 orga.org
+-rw-r--r--  1 alchenerd alchenerd  6489  7月  5 22:53 README.md
+-rw-r--r--  1 alchenerd alchenerd  1075  7月  4 00:58 TODO.md
+#+end_example
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:09
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1473
+:TOKENS_OUT: 863
+:TOKENS_REASONING: 749
+:COST_USD: 0.009976
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_h6rNUA4JCz7FyJYgffu0","function":{"name":"execute_shell_command","arguments":"{\"command\":\"cat << 'EOF' > test.sh\\n#!/bin/bash\\nif [ -f output.txt ] && [ \\\"$(cat output.txt)\\\" = \\\"DONE\\\" ]; then\\n    echo \\\"Test passed!\\\"\\n    exit 0\\nelse\\n    echo \\\"Test failed: output.txt either does not exist or does not contain 'DONE'\\\" >&2\\n    exit 1\\nfi\\nEOF\\nchmod +x test.sh\\n./test.sh\\n\"}"}}]
+:END:
+:REASONING:
+**Structuring BDD Scenarios**
+
+I'm focusing on how to best structure the BDD scenarios to meet the deterministic shell script goal. My current thinking revolves around creating the initial test that defines the desired `output.txt` content, then moving on to the implementation steps.
+
+**Refining Test Strategy**
+
+I'm re-evaluating the initial steps. The current test setup isn't meeting the desired failing state. I need to explicitly ensure the test fails before I attempt to create a passing implementation. I'm considering how best to introduce this controlled failure.
+
+**Designing Test Execution**
+
+My focus has shifted to integrating user interaction points. I'm planning to write a failing test, demonstrate its failure, then pause for user input before proceeding to create the passing script. I've decided on a bash script for testing.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_h6rNUA4JCz7FyJYgffu0
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"cat << 'EOF' > test.sh\n#!/bin/bash\nif [ -f output.txt ] && [ \"$(cat output.txt)\" = \"DONE\" ]; then\n    echo \"Test passed!\"\n    exit 0\nelse\n    echo \"Test failed: output.txt either does not exist or does not contain 'DONE'\" >&2\n    exit 1\nfi\nEOF\nchmod +x test.sh\n./test.sh\n"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="cat << 'EOF' > test.sh\n#!/bin/bash\nif [ -f output.txt ] && [ \"$(cat output.txt)\" = \"DONE\" ]; then\n    echo \"Test passed!\"\n    exit 0\nelse\n    echo \"Test failed: output.txt either does not exist or does not contain 'DONE'\" >&2\n    exit 1\nfi\nEOF\nchmod +x test.sh\n./test.sh\n")
+
+#+RESULTS:
+: > > > > > > > > > __ORGA_PROMPT__
+: Test failed: output.txt either does not exist or does not contain 'DONE'
+: [exit status: 1]
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:10
+:FINISH_REASON: stop
+:TOKENS_IN: 1773
+:TOKENS_OUT: 662
+:TOKENS_REASONING: 531
+:COST_USD: 0.008618
+:END:
+:REASONING:
+**Developing Test Cases**
+
+I’m currently focused on ensuring our test infrastructure is robust. With `test.sh` in place, the next logical step involves refining the acceptance criteria and exploring potential edge cases to guarantee comprehensive validation of the deterministic shell script's expected output.
+
+**Confirming Test Failure**
+
+I've successfully established a test suite, confirmed it fails as intended by exiting with a non-zero status and displaying a clear failure message. This deliberate failure allows us to pause and await your input before proceeding to create the passing condition.
+
+
+:END:
+I have completed the first two stages of the BDD process:
+
+1. I created a test script called test.sh that checks if the file output.txt exists and contains the exact string "DONE".
+2. I ran the test script, and it returned a failure status of 1 with the message: "Test failed: output.txt either does not exist or does not contain 'DONE'". This confirms the test is failing on purpose as expected.
+
+I am now yielding control to you. Please let me know when you are ready for me to proceed to the third stage: creating the source file / output to make this test pass.
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-11 00:12
+:END:
+#+CALL: orga_goal_verification()
+
+#+RESULTS:
+: Did not find string DONE in output.txt
+** Assistant Tool Call
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:12
+:FINISH_REASON: tool_calls
+:TOKENS_IN: 1956
+:TOKENS_OUT: 143
+:TOKENS_REASONING: 110
+:COST_USD: 0.004221
+:TOOL_CALLS_JSON: [{"type":"function","index":0,"id":"tool_execute_shell_command_Ef6jawQ91ByMCYpql73a","function":{"name":"execute_shell_command","arguments":"{\"command\":\"echo -n \\\"DONE\\\" > output.txt\\n./test.sh\\n\"}"}}]
+:END:
+:REASONING:
+**Creating Source File**
+
+I understand the test failed because "DONE" wasn't found. My next action is to create the necessary source file to implement the functionality and aim for that "DONE" marker.
+
+
+:END:
+** Tool
+:PROPERTIES:
+:TOOL_CALL_ID: tool_execute_shell_command_Ef6jawQ91ByMCYpql73a
+:FUNCTION_NAME: execute_shell_command
+:ARGUMENTS: {"command":"echo -n \"DONE\" > output.txt\n./test.sh\n"}
+:END:
+#+CALL: orga_tool_implementation__execute_shell_command(command="echo -n \"DONE\" > output.txt\n./test.sh\n")
+
+#+RESULTS:
+: Test passed!
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:12
+:FINISH_REASON: stop
+:TOKENS_IN: 2040
+:TOKENS_OUT: 60
+:TOKENS_REASONING: 0
+:COST_USD: 0.003600
+:END:
+I have implemented the third stage of our BDD process.
+
+3. I created the source file (`output.txt` containing the string "DONE").
+4. I ran our test script, and it passed successfully!
+
+The goal is now satisfied, and the BDD cycle is complete.
+
+** User
+:PROPERTIES:
+:DATE: 2026-07-11 00:12
+:END:
+#+CALL: orga_goal_verification()
+
+#+RESULTS:
+: 0
+** Assistant
+:PROPERTIES:
+:MODEL: google/gemini-3.5-flash
+:PROVIDER: Google
+:DATE: 2026-07-11 00:12
+:FINISH_REASON: stop
+:TOKENS_IN: 2129
+:TOKENS_OUT: 257
+:TOKENS_REASONING: 143
+:COST_USD: 0.005507
+:END:
+:REASONING:
+**Confirming Goal Achievement**
+
+The primary objective has been met, indicated by a successful verification status. I'm now transitioning to articulating this outcome in a clear, narrative format for your review.
+
+
+:END:
+The goal-verification process has succeeded with status 0, demonstrating that the output.txt file successfully contains the string "DONE".
+
+We completed the following steps:
+1. Created test.sh to verify that output.txt contains the string "DONE".
+2. Verified that the test initially failed as there was no output.txt.
+3. Created output.txt containing the required string, and verified that both the BDD test script passed and the goal verification tool returned success.
+
+Everything is complete. Let me know if you need any further assistance!
 ** Input
