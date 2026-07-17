@@ -1,4 +1,4 @@
--*- mode: org; coding: utf-8; eval: (progn (org-babel-goto-named-src-block "orga__initialize") (org-babel-execute-src-block)); -*-
+-*- mode: org; coding: utf-8; -*-
 
 #+TITLE: OrgA
 #+DESCRIPTION: An agent who lives in org-mode.
@@ -351,7 +351,7 @@ each spliced into =orga/initialize= independently.
 #+BEGIN_SRC emacs-lisp
 (defvar orga/dry-run nil
   "When non-nil, `ai-chat-cycle' shows the API payload instead of sending it.
-Toggle with C-c C-d (bound by the file-local eval cookie).")
+Toggle with C-c C-v D after executing OrgA's initialization block.")
 
 (defun orga/toggle-dry-run ()
   "Toggle dry-run mode and report the new state in the minibuffer."
@@ -1412,11 +1412,10 @@ Bound to C-c C-v by the keybinding block written below."
 #+RESULTS: orga__initialize
 : OrgA loaded -- C-c C-v S to send.
 
-Kept under the name =orga__initialize= rather than =init_ai= so the
-heading title above doubles as a provenance note; rename it back to
-=init_ai= later if you'd rather match orga.org's naming exactly --
-just remember to update the eval cookie at the top of this file to
-match.
+This document intentionally has no file-local =eval:= form, so merely
+visiting it never evaluates source blocks.  To initialize OrgA, navigate to
+this named block with =M-x org-babel-goto-named-src-block RET
+orga__initialize RET= and execute it with =C-c C-c=.
 
 * Wiki
 Add to here a forest of Markdown source blocks so OrgA can query using the `fetch(api)` tool.
@@ -1916,9 +1915,11 @@ a `** Assistant` heading in Chat History.
 
 ## Runtime
 
-The agent is initialized by evaluating a named [[wiki://concepts/org-babel|Org Babel]] source block on
-file open (see the `eval:` directive in the file's first line). All logic lives in `emacs-lisp`
-src blocks grouped under `* Initialize AI Sender Method`.
+The agent is initialized only when you explicitly execute the named
+`orga__initialize` [[wiki://concepts/org-babel|Org Babel]] source block;
+merely opening this document never evaluates its source blocks. All runtime
+logic lives in `emacs-lisp` src blocks grouped under `* Initialize AI Sender
+Method`.
 
 Context sent to the API on each turn is assembled from three sources:
 

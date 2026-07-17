@@ -6,13 +6,13 @@ An AI agent that lives entirely inside a single Emacs Org-mode file.
 
 ## What is this?
 
-OrgA collapses an entire LLM agent — runtime, tool definitions, system prompt, and chat history — into one `.org` file. There's no server, no separate config, no database. You open `orga.org` in Emacs, it self-initializes via a file-local `eval:` cookie, and from then on the conversation *is* the document: every turn is appended as Org headings, and every reply is written back into the buffer for you to read, edit, or fork with normal Org-mode tools.
+OrgA collapses an entire LLM agent — runtime, tool definitions, system prompt, and chat history — into one `.org` file. There's no server, no separate config, no database. You open `orga.org`, explicitly execute its initialization block, and from then on the conversation *is* the document: every turn is appended as Org headings, and every reply is written back into the buffer for you to read, edit, or fork with normal Org-mode tools.
 
-It talks to any [OpenRouter](https://openrouter.ai)-compatible model.
+It talks to any [OpenRouter](https://openrouter.ai)-compatible model. Opening an OrgA document is safe by default: it never executes source blocks automatically.
 
 ## How it works
 
-On file open, Emacs evaluates the `orga__initialize` source block (via the `eval:` directive on line 1), which loads a small pipeline:
+After you explicitly execute the `orga__initialize` source block, Emacs loads a small pipeline:
 
 **Collect → Assemble → Send → Parse → Commit → Execute → Yield**
 
@@ -43,7 +43,27 @@ Everything is a plain heading, property, or source block, so the whole state of 
    - Add `OPENROUTER_API_KEY=...` to a `.env` file next to `orga.org`.
    - Export `OPENROUTER_API_KEY` in your shell environment.
 2. Set the model you want in the `openrouter_model` block (defaults to `google/gemini-3.5-flash`).
-3. Open `orga.org` in Emacs. The `eval:` cookie will prompt to run `orga__initialize` — accept it. You should see `OrgA loaded -- C-c C-v S to send.` in the minibuffer.
+3. Open `orga.org` in Emacs. **Opening it does not run any code.**
+4. Explicitly execute the initialization block:
+   - Run `M-x org-babel-goto-named-src-block RET orga__initialize RET`.
+   - With point in the block, press `C-c C-c` and confirm evaluation if Emacs asks.
+
+   Emacs reports `OrgA loaded -- C-c C-v S to send.` when the runtime is ready.
+
+To initialize OrgA noninteractively, use an explicit batch invocation:
+
+```sh
+emacs --batch /path/to/orga.org \
+  --eval '(progn
+            (require (quote org))
+            (require (quote ob-core))
+            (with-current-buffer (get-file-buffer "/path/to/orga.org")
+              (goto-char (org-babel-find-named-block "orga__initialize"))
+              (let ((org-confirm-babel-evaluate nil))
+                (org-babel-execute-src-block)))))'
+```
+
+Only execute the initialization block in an OrgA document whose source you trust; it evaluates that document's runtime.
 
 ## Usage
 
