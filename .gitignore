@@ -2,3 +2,8 @@
 *.bak
 *.json
 *.md
+
+# Local planning/session artifacts
+discuss-session.org
+tickets.org
+tickets/
