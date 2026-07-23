@@ -6,7 +6,7 @@ An AI agent that lives entirely inside a single Emacs Org-mode file.
 
 ## What is this?
 
-OrgA collapses an entire LLM agent — runtime, tool definitions, system prompt, and chat history — into one `.org` file. There's no server, no separate config, no database. You open `orga.org`, explicitly execute its initialization block, and from then on the conversation *is* the document: every turn is appended as Org headings, and every reply is written back into the buffer for you to read, edit, or fork with normal Org-mode tools.
+OrgA collapses an entire LLM agent — runtime, tool definitions, system prompt, chat history, and an optional browser UI — into one `.org` file. There's no separate config or database. You can use it directly in Emacs, or run its built-in local HTMX server and chat from a browser. Either way, the conversation *is* the document: every turn is appended as Org headings, and every reply is written back into the file for you to inspect, edit, or fork with normal Org-mode tools.
 
 It talks to any [OpenRouter](https://openrouter.ai)-compatible model. Opening an OrgA document is safe by default: it never executes source blocks automatically.
 
@@ -65,7 +65,7 @@ emacs --batch /path/to/orga.org \
 
 Only execute the initialization block in an OrgA document whose source you trust; it evaluates that document's runtime.
 
-## Usage
+## Usage in Emacs
 
 Write your message under the trailing `** Input` heading, then send it.
 
@@ -77,9 +77,37 @@ Write your message under the trailing `** Input` heading, then send it.
 | Execute pending `#+CALL:` lines | `E` | `<f7>` |
 | Compact context now | `C` | `<f6>` |
 
-When the model calls a tool, OrgA scaffolds a `** Tool` heading with a `#+CALL:` line per call. By default you run each with `C-c C-c` and re-send; set `orga/auto-eval-p` to `t` if you want tool calls executed and looped automatically.
+When the model calls a tool, OrgA scaffolds a `** Tool` heading with a `#+CALL:` line per call. Tool calls are currently executed and looped automatically (`orga/auto-eval-p` defaults to `t`). Set it to `nil` before initialization to restore the manual workflow, where you inspect and execute calls yourself before re-sending.
 
-⚠️ **Auto-eval + shell tool is dangerous.** The `shell` tool gives the model direct command execution. Turning on `orga/auto-eval-p` while it's enabled means the model can run arbitrary commands on your machine without you looking at them first. The code itself warns: if you do this, you're accepting that risk.
+⚠️ **Auto-eval + shell tool is dangerous.** The `shell` tool gives the model direct command execution. With the current default, the model can run arbitrary commands on your machine without you reviewing them first. Disable `orga/auto-eval-p`, disable the shell tool, or run OrgA in an appropriately isolated environment if you do not accept that risk.
+
+## Browser UI (HTMX server)
+
+OrgA now includes a small HTTP server implemented in Emacs Lisp. It serves a local chat UI, sends browser submissions through the same `ai-chat-cycle`, and saves the resulting conversation back to `orga.org`.
+
+Start it from the repository root:
+
+```sh
+emacs --batch orga.org \
+  --eval '(setq org-confirm-babel-evaluate nil)' \
+  --eval '(progn
+            (org-babel-goto-named-src-block "orga-server")
+            (org-babel-execute-src-block))'
+```
+
+Then open <http://127.0.0.1:8080/>. Stop the server with `Ctrl-C` in its terminal.
+
+The browser UI:
+
+- renders user and assistant messages, with tool calls folded behind expandable details;
+- shows an optimistic user message while the LLM is processing and restores failed submissions for retry;
+- HTML-escapes messages and tool arguments before rendering them;
+- watches `orga.org` for external edits and prompts the browser to refresh;
+- treats the file on disk as authoritative and aborts an in-flight request rather than overwriting a conflicting edit.
+
+The active `* Chat History` must be the final top-level heading in the file. The server validates this invariant and only uses that trailing session. It binds to `127.0.0.1` on port `8080`; HTMX itself is loaded from the unpkg CDN, so the browser needs network access to fetch that script unless you change the page template.
+
+Starting the server explicitly executes the trusted `orga-server` block, which in turn initializes the OrgA runtime. As with manual initialization, do this only for an OrgA document whose source you trust. The same auto-eval and shell-tool warning applies to browser submissions.
 
 ## Project structure (inside `orga.org`)
 
@@ -93,12 +121,15 @@ When the model calls a tool, OrgA scaffolds a `** Tool` heading with a `#+CALL:`
 * System Prompt              agent identity, tangled to SOUL.md
 * Goal / Goal 2 / Goal Log   optional autonomous-loop objective + history
 * Summary                    rolling compacted memory
-* Chat History               the live conversation
+* HTMX Server                local browser UI, file synchronization, and tests
+* Chat History               the live conversation (must remain last for the server)
 ```
 
 ## Status / caveats
 
-- Tool execution is manual by default and involves the human running `#+CALL:` lines — treat this as a deliberate safety pause, not a bug.
+- Tool execution is automatic by default. This is convenient but unsafe with powerful tools such as `shell`; set `orga/auto-eval-p` to `nil` for a manual review pause.
+- The browser server is intentionally small: it is a localhost Emacs batch process, not a production web service and not intended to be exposed to untrusted networks.
+- Browser history intentionally shows conversational messages and folded tool-call metadata, not reasoning drawers, usage metadata, tool-call IDs, or raw tool-result subtrees.
 - The `conquer_the_world` tool is an intentionally-unimplemented joke/demo showing how the `:disabled:` tag and a stub Python implementation work together.
-- This is a single-file, Emacs-only project; there's no packaging step described here beyond opening the file.
+- This remains a single-file, Emacs-based project; the optional HTTP server and its tests also live inside `orga.org`.
 
